@@ -22,19 +22,23 @@ partial def mkEqTrans' (p₁ p₂ : Expr) : MetaM Expr := do
   else
     mkEqTrans p₁ p₂
 
-partial def mkEqMPR' : Expr → Expr → MetaM Expr
+partial def mkEqMPR' (e1 e2 : Expr) : MetaM Expr := do
   -- A mpr applied to an congruence with equality can be turned into transitivities
-  | mkApp6 (.const ``congrArg [_u, _v]) _α _ _a _a'
-        (.lam n t (mkApp3 (.const ``Eq _) _β b₁ b₂) bi) p1, p2
-  => do mkEqTrans' (← mkCongrArg' (.lam n t b₁ bi) p1)
-          (← mkEqTrans' p2 (← mkCongrArg' (.lam n t b₂ bi) (← mkEqSymm p1)))
+  if let mkApp6 (.const ``congrArg [_u, _v]) _α _ _a _a'
+          (.lam n t (mkApp3 (.const ``Eq _) _β b₁ b₂) bi) p1 := e1 then
+    return ← mkEqTrans' (← mkCongrArg' (.lam n t b₁ bi) p1)
+          (← mkEqTrans' e2 (← mkCongrArg' (.lam n t b₂ bi) (← mkEqSymm p1)))
 
   -- Special case of the above, with an eta-contracted congruence
-  | mkApp6 (.const ``congrArg [_u, _v]) _α _ _a _a'
-        (mkApp2 (.const ``Eq _) _β _b₁) p1, p2
-  => do mkEqTrans' p2 (← mkEqSymm p1)
+  if let mkApp6 (.const ``congrArg [_u, _v]) _α _ _a _a'
+          (mkApp2 (.const ``Eq _) _β _b₁) p1 := e1 then
+    return ← mkEqTrans' e2 (← mkEqSymm p1)
 
-  | p, e => mkEqMPR p e
+   -- A mpr applied to an mpr can be turned into a transitivity
+  if let mkApp4 (.const ``Eq.mpr _) _ _ p2 p3 := e2 then
+    return ← mkEqMPR' (← mkEqTrans' e1 p2) p3
+
+  mkEqMPR e1 e2
 
 
 partial def mkOfEqTrue' : Expr → MetaM Expr
@@ -260,3 +264,17 @@ info: Try this: apply
 example (n : Nat) (P : Nat → Prop) (h : P n): P (0 + 1 * n * 1) := by
   calcify simp
   exact h
+
+/--
+info: Try this: exact
+  Eq.mpr
+    (calc
+      P (0 + 1 * n * 1)
+      _ = P (0 + n * 1) := (congrArg (fun x => P (0 + x * 1)) (Nat.one_mul n))
+      _ = P (0 + n) := (congrArg (fun x => P (0 + x)) (Nat.mul_one n))
+      _ = P n := congrArg P (Nat.zero_add n))
+    h
+-/
+#guard_msgs in
+example (n : Nat) (P : Nat → Prop) (h : P n): P (0 + 1 * n * 1) := by
+  calcify simp [h]
