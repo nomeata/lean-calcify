@@ -22,6 +22,12 @@ def delabCalcProof : CalcProof → MetaM (TSyntax `tactic)
       $(← delabToRefinableSyntax lhs):term
       $stepStx*)
 
+def mkCongrArg' (f p : Expr) : MetaM Expr := do
+  if let .lam _ _ b _ := f then
+    if ! b.hasLooseBVars then
+      return ← mkEqRefl b
+  mkCongrArg f p
+
 /--
 Takes a proof of `(a = b) = (a' = b')` and returns a proof of `a = a'` and `b' = b`.
 -/
@@ -58,6 +64,7 @@ partial def simplify : Expr → Expr → Expr → MetaM CalcProof
   | lhs, rhs,
     mkApp2 (.const ``of_eq_true _) _P (mkApp2 (.const ``eq_self us) α a)
   => simplify lhs rhs (mkApp2 (.const ``Eq.refl us) α a)
+
   | _lhs, _rhs,
     mkApp2 (.const ``of_eq_true _) _P
       (mkApp6 (.const ``Eq.trans _) _α _a _b _c
@@ -68,11 +75,28 @@ partial def simplify : Expr → Expr → Expr → MetaM CalcProof
     let cp1 ← simplify a a' p1
     let cp2 ← simplify b b' p2
     return cp1 ++ cp2
+
   | _lhs, _rhs, mkApp6 (.const ``Eq.trans [_u]) _α a b c p1 p2
   => do
     let cp1 ← simplify a b p1
     let cp2 ← simplify b c p2
     return cp1 ++ cp2
+
+  -- rw produces Eq.mpr applied to congrArg
+  | lhs, rhs, mkApp4 (.const ``Eq.mpr _) _ _
+     (mkApp2 (.const ``id _) _
+       (mkApp6 (.const ``congrArg [_u, _v]) _α _
+          _a _a'
+          (.lam n t (mkApp3 (.const ``Eq _) _β b₁ b₂) bi)
+          p1)) p2
+  => do
+    simplify lhs rhs
+      (← mkEqTrans (← mkCongrArg' (.lam n t b₁ bi) p1)
+        (← mkEqTrans p2 (← mkCongrArg' (.lam n t b₂ bi) (← mkEqSymm p1))))
+
+  | lhs, rhs, mkApp6 (.const ``congrArg [_u, _v]) _α _ _a _a' (.lam _ _ (.bvar 0) _) p1
+  => do simplify lhs rhs p1
+
   | _lhs, _rhs,
     mkApp4 (.const ``Eq.symm [u]) α _rhs' _lhs'
       (mkApp6 (.const ``Eq.trans _) _α a b c p1 p2)
@@ -80,6 +104,7 @@ partial def simplify : Expr → Expr → Expr → MetaM CalcProof
     let cp1 ← simplify c b (mkApp4 (.const ``Eq.symm [u]) α b c p2)
     let cp2 ← simplify b a (mkApp4 (.const ``Eq.symm [u]) α a b p1)
     return cp1 ++ cp2
+
   | lhs, _rhs, mkApp2 (.const ``Eq.refl _) _ _
   => return (lhs, #[])
   | lhs, rhs, proof
@@ -146,28 +171,34 @@ info: Try this: calc
 example (n : Nat) : 0 + 1 * n = n := by
   calcify simp
 
-set_option pp.explicit true
 /--
 info: Try this: calc
-  @HAdd.hAdd Nat Nat Nat (@instHAdd Nat instAddNat) 0 n
-  _ = @HMul.hMul Nat Nat Nat (@instHMul Nat instMulNat) 1 n :=
-    @Eq.mpr
-      (@Eq Nat (@HAdd.hAdd Nat Nat Nat (@instHAdd Nat instAddNat) 0 n)
-        (@HMul.hMul Nat Nat Nat (@instHMul Nat instMulNat) 1 n))
-      (@Eq Nat n (@HMul.hMul Nat Nat Nat (@instHMul Nat instMulNat) 1 n))
-      (@id
-        (@Eq Prop
-          (@Eq Nat (@HAdd.hAdd Nat Nat Nat (@instHAdd Nat instAddNat) 0 n)
-            (@HMul.hMul Nat Nat Nat (@instHMul Nat instMulNat) 1 n))
-          (@Eq Nat n (@HMul.hMul Nat Nat Nat (@instHMul Nat instMulNat) 1 n)))
-        (@congrArg Nat Prop (@HAdd.hAdd Nat Nat Nat (@instHAdd Nat instAddNat) 0 n) n
-          (fun _a => @Eq Nat _a (@HMul.hMul Nat Nat Nat (@instHMul Nat instMulNat) 1 n)) (Nat.zero_add n)))
-      (@Eq.mpr (@Eq Nat n (@HMul.hMul Nat Nat Nat (@instHMul Nat instMulNat) 1 n)) (@Eq Nat n n)
-        (@id (@Eq Prop (@Eq Nat n (@HMul.hMul Nat Nat Nat (@instHMul Nat instMulNat) 1 n)) (@Eq Nat n n))
-          (@congrArg Nat Prop (@HMul.hMul Nat Nat Nat (@instHMul Nat instMulNat) 1 n) n (fun _a => @Eq Nat n _a)
-            (Nat.one_mul n)))
-        (@Eq.refl Nat n))
+  0 + n
+  _ = n := (Nat.zero_add n)
+  _ = 1 * n := Eq.symm (Nat.one_mul n)
 -/
 #guard_msgs in
 example (n : Nat) : 0 + n = 1 * n := by
-  calcify rw [Nat.zero_add, Nat.one_mul]
+  calcify simp [Nat.zero_add, Nat.one_mul]
+
+/--
+info: Try this: calc
+  0 + n
+  _ = n := (Nat.zero_add n)
+  _ = n * 1 := (Eq.symm (Nat.mul_one n))
+  _ = 1 * n * 1 := congrArg (fun _a => _a * 1) (Eq.symm (Nat.one_mul n))
+-/
+#guard_msgs in
+example (n : Nat) : 0 + n = 1 * n * 1 := by
+  calcify rw [Nat.zero_add, Nat.one_mul, Nat.mul_one]
+
+/--
+info: Try this: calc
+  0 + n
+  _ = n := (Nat.zero_add n)
+  _ = 0 + n := (Eq.symm (Nat.zero_add n))
+  _ = 0 + n * 1 := congrArg (fun _a => 0 + _a) (Eq.symm (Nat.mul_one n))
+-/
+#guard_msgs in
+example (n : Nat) : 0 + n = 0 + (n * 1) := by
+  calcify rw [Nat.mul_one, Nat.zero_add]
