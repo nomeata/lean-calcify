@@ -8,25 +8,49 @@ open Lean Elab Tactic Meta
 
 open Lean.Meta.Tactic.TryThis (delabToRefinableSyntax addSuggestion)
 
-def CalcProof := Expr × Array (Expr × Expr)
-
-
-instance : Append CalcProof where
-  append | (lhs, steps), (_lhs', steps') => (lhs, steps ++ steps')
-
-def delabCalcProof : CalcProof → MetaM (TSyntax `tactic)
-  | (lhs, steps) => do
-  let stepStx ← steps.mapM fun (proof, rhs) => do
-    `(calcStep|_ = $(← delabToRefinableSyntax rhs) := $(← delabToRefinableSyntax proof))
-  `(tactic|calc
-      $(← delabToRefinableSyntax lhs):term
-      $stepStx*)
-
 def mkCongrArg' (f p : Expr) : MetaM Expr := do
   if let .lam _ _ b _ := f then
     if ! b.hasLooseBVars then
       return ← mkEqRefl b
+  if let .lam _ _ (.bvar 0) _ := f then
+    return p
   mkCongrArg f p
+
+partial def mkEqTrans' (p₁ p₂ : Expr) : MetaM Expr := do
+  if let mkApp6 (.const ``Eq.trans _) _ _ _ _ p₁₁ p₁₂ := p₁ then
+    mkEqTrans' p₁₁ (← mkEqTrans' p₁₂ p₂)
+  else
+    mkEqTrans p₁ p₂
+
+partial def mkEqMPR' : Expr → Expr → MetaM Expr
+  -- A mpr applied to an congruence with equality can be turned into transitivities
+  | mkApp6 (.const ``congrArg [_u, _v]) _α _ _a _a'
+        (.lam n t (mkApp3 (.const ``Eq _) _β b₁ b₂) bi) p1, p2
+  => do mkEqTrans' (← mkCongrArg' (.lam n t b₁ bi) p1)
+          (← mkEqTrans' p2 (← mkCongrArg' (.lam n t b₂ bi) (← mkEqSymm p1)))
+
+  -- Special case of the above, with an eta-contracted congruence
+  | mkApp6 (.const ``congrArg [_u, _v]) _α _ _a _a'
+        (mkApp2 (.const ``Eq _) _β _b₁) p1, p2
+  => do mkEqTrans' p2 (← mkEqSymm p1)
+
+  | p, e => mkEqMPR p e
+
+
+partial def mkOfEqTrue' : Expr → MetaM Expr
+  | mkApp2 (.const ``eq_self _) _α a
+  => mkEqRefl a
+
+  | mkApp2 (.const ``eq_true []) _P p
+  => pure p
+
+
+  | mkApp6 (.const ``Eq.trans [_u]) _ _ _ _ p1 p2
+  => do mkEqMPR' p1 (← mkOfEqTrue' p2)
+
+  | p
+  => do mkOfEqTrue p
+
 
 /--
 Takes a proof of `(a = b) = (a' = b')` and returns a proof of `a = a'` and `b' = b`.
@@ -60,75 +84,94 @@ def split_eq_true : Expr → MetaM (Expr × Expr × Expr × Expr × Expr × Expr
   | e
   => throwError m!"Expected proof of `(a = b) = (a' = b')`, but got:\n{e}"
 
-partial def simplify : Expr → Expr → Expr → MetaM CalcProof
-  | lhs, rhs,
-    mkApp2 (.const ``of_eq_true _) _P (mkApp2 (.const ``eq_self us) α a)
-  => simplify lhs rhs (mkApp2 (.const ``Eq.refl us) α a)
+partial def simplify' : Expr → MetaM Expr
+  | mkApp2 (.const ``of_eq_true _) _ p
+  => do mkOfEqTrue' (← simplify' p)
 
-  | _lhs, _rhs,
-    mkApp2 (.const ``of_eq_true _) _P
-      (mkApp6 (.const ``Eq.trans _) _α _a _b _c
-        p
-        (mkApp2 (.const ``eq_self _us) _α' _a'))
+  -- eliminate id application, and hope for the best
+  | mkApp4 (.const ``Eq.mpr us) α β (mkApp2 (.const ``id _) _ p) p2
+  => simplify' (mkApp4 (.const ``Eq.mpr us) α β p p2)
+
+  -- replace congrFun with congrArg
+  | mkApp6 (.const ``congrFun [_u, _v]) _ _ f₁ _ p1 x
+  => do simplify' (← mkCongrArg (.lam "f" (←inferType f₁) (.app (.bvar 0) x) .default) p1)
+
+  -- take congr apart
+  | mkApp8 (.const ``congr [_u, _v]) _α _β _f₁ f₂ x₁ _x₂ p1 p2
   => do
-    let (a, p1, a', b, p2, b') ← split_eq_true p
-    let cp1 ← simplify a a' p1
-    let cp2 ← simplify b b' p2
-    return cp1 ++ cp2
+    let eqf ← simplify' (← mkCongrFun (← simplify' p1) x₁)
+    let eqx ← simplify' (← mkCongrArg f₂ (← simplify' p2))
+    mkEqTrans' eqf eqx
 
-  | _lhs, _rhs, mkApp6 (.const ``Eq.trans [_u]) _α a b c p1 p2
+  -- push congrArg into trans
+  | mkApp6 (.const ``congrArg [_u, _v]) _α _β _a _a' f
+    (mkApp6 (.const ``Eq.trans _) _ _ _ _ p1 p2)
+  => do simplify' (← mkEqTrans' (← mkCongrArg f p1) (← mkCongrArg f p2))
+
+  -- simplify under mpr
+  | mkApp4 (.const ``Eq.mpr _) _ _ p₁ p₂
   => do
-    let cp1 ← simplify a b p1
-    let cp2 ← simplify b c p2
-    return cp1 ++ cp2
+    mkEqMPR' (← simplify' p₁) (← simplify' p₂)
 
-  -- rw produces Eq.mpr applied to congrArg
-  | lhs, rhs, mkApp4 (.const ``Eq.mpr _) _ _
-     (mkApp2 (.const ``id _) _
-       (mkApp6 (.const ``congrArg [_u, _v]) _α _
-          _a _a'
-          (.lam n t (mkApp3 (.const ``Eq _) _β b₁ b₂) bi)
-          p1)) p2
-  => do
-    simplify lhs rhs
-      (← mkEqTrans (← mkCongrArg' (.lam n t b₁ bi) p1)
-        (← mkEqTrans p2 (← mkCongrArg' (.lam n t b₂ bi) (← mkEqSymm p1))))
+  -- simplify under trans
+  | mkApp6 (.const ``Eq.trans _) _α _a _b _c p1 p2
+  => do mkEqTrans' (← simplify' p1) (← simplify' p2)
 
-  | lhs, rhs, mkApp6 (.const ``congrArg [_u, _v]) _α _ _a _a' (.lam _ _ (.bvar 0) _) p1
-  => do simplify lhs rhs p1
+  | e => pure e
 
-  | _lhs, _rhs,
-    mkApp4 (.const ``Eq.symm [u]) α _rhs' _lhs'
-      (mkApp6 (.const ``Eq.trans _) _α a b c p1 p2)
-  => do
-    let cp1 ← simplify c b (mkApp4 (.const ``Eq.symm [u]) α b c p2)
-    let cp2 ← simplify b a (mkApp4 (.const ``Eq.symm [u]) α a b p1)
-    return cp1 ++ cp2
+def getCalcSteps : Expr → Array (TSyntax `calcStep) → MetaM (Array (TSyntax `calcStep))
+  | mkApp6 (.const ``Eq.trans _) _ _ rhs _ proof p2, acc => do
+    let step ← `(calcStep|_ = $(← delabToRefinableSyntax rhs) := $(← delabToRefinableSyntax proof))
+    getCalcSteps p2 (acc.push step)
+  | proof, acc => do
+    let some (_, _, rhs) := (← inferType proof).eq? | throwError "Expected proof of equality"
+    let step ← `(calcStep|_ = $(← delabToRefinableSyntax rhs) := $(← delabToRefinableSyntax proof))
+    return acc.push step
 
-  | lhs, _rhs, mkApp2 (.const ``Eq.refl _) _ _
-  => return (lhs, #[])
-  | lhs, rhs, proof
-  => return (lhs, #[(proof, rhs)])
+def delabCalcProof (e : Expr) : MetaM (TSyntax `tactic) := do
+    let some (_, lhs, _) := (← inferType e).eq? | throwError "Expected proof of equality"
+    let stepStx ← getCalcSteps e #[]
+    `(tactic|calc
+        $(← delabToRefinableSyntax lhs):term
+        $stepStx*)
+
+def delabCalcTerm (e : Expr) : MetaM (TSyntax `term) := do
+    let some (_, lhs, _) := (← inferType e).eq? | throwError "Expected proof of equality"
+    let stepStx ← getCalcSteps e #[]
+    `(term|calc
+        $(← delabToRefinableSyntax lhs):term
+        $stepStx*)
+
+def delabProof : Expr → MetaM (TSyntax `tactic)
+  | mkApp4 (.const ``Eq.mpr _) _ _ p1 (.mvar _) => do
+    let calcTerm ← delabCalcTerm p1
+    `(tactic|apply $(mkIdent ``Eq.mpr) <| $calcTerm)
+
+  | mkApp4 (.const ``Eq.mpr _) _ _ p1 p2 => do
+    let calcTerm ← delabCalcTerm p1
+    let restProof ← delabToRefinableSyntax p2
+    `(tactic|exact $(mkIdent ``Eq.mpr) $calcTerm $restProof)
+
+  | e => delabCalcProof e
+
 
 elab (name := calcifyTac) tk:"calcify " t:tacticSeq : tactic => withMainContext do
   let goalMVar ← getMainGoal
   evalTactic t
-  let goal ← instantiateMVars (← goalMVar.getType)
-  let goal ← whnf goal
   let proof ← instantiateMVars (mkMVar goalMVar)
+  let proof ← simplify' proof
+  check proof
+  -- let proofStx ← delabToRefinableSyntax proof
+  let tactic ← delabProof proof
 
-  let .app (.app (.app (.const ``Eq _) _α) lhs) rhs := goal
-    | logWarning $ m!"Goal is not an equality:\n{goal}\n"
-
-  let cp ← simplify lhs rhs proof
-  let ts ← delabCalcProof cp
-
+  /-
+  let goal ← instantiateMVars (← goalMVar.getType)
   let testMVar ← mkFreshExprSyntheticOpaqueMVar goal
   withRef tk do
-    Lean.Elab.Term.runTactic testMVar.mvarId! (← `(term|by {$ts}))
+    Lean.Elab.Term.runTactic testMVar.mvarId! (← `(term|by {$tactic}))
+  -/
 
-  addSuggestion tk ts (origSpan? := ← getRef)
-
+  addSuggestion tk tactic (origSpan? := ← getRef)
 
 
 /--
@@ -136,7 +179,19 @@ info: Try this: calc
   0 + n
   _ = n := (Nat.zero_add n)
   _ = 1 * n := (Eq.symm (Nat.one_mul n))
-  _ = 1 * 1 * n := Eq.symm (congrArg (fun x => x * n) (Nat.mul_one 1))
+  _ = 1 * 1 * n := congrArg (fun x => x * n) (Eq.symm (Nat.mul_one 1))
+-/
+#guard_msgs in
+example (n : Nat) : 0 + n = 1 * 1 * n := by
+  calcify simp
+
+
+/--
+info: Try this: calc
+  0 + n
+  _ = n := (Nat.zero_add n)
+  _ = 1 * n := (Eq.symm (Nat.one_mul n))
+  _ = 1 * 1 * n := congrArg (fun x => x * n) (Eq.symm (Nat.mul_one 1))
 -/
 #guard_msgs in
 example (n : Nat) : 0 + n = 1 * 1 * n := by
@@ -158,17 +213,6 @@ info: Try this: calc
 -/
 #guard_msgs in
 example (n : Nat) : n = 1 * n := by
-  calcify simp
-
-
-/--
-info: Try this: calc
-  0 + 1 * n
-  _ = 0 + n := (congrArg (HAdd.hAdd 0) (Nat.one_mul n))
-  _ = n := Nat.zero_add n
--/
-#guard_msgs in
-example (n : Nat) : 0 + 1 * n = n := by
   calcify simp
 
 /--
@@ -202,3 +246,17 @@ info: Try this: calc
 #guard_msgs in
 example (n : Nat) : 0 + n = 0 + (n * 1) := by
   calcify rw [Nat.mul_one, Nat.zero_add]
+
+/--
+info: Try this: apply
+  Eq.mpr <|
+    calc
+      P (0 + 1 * n * 1)
+      _ = P (0 + n * 1) := (congrArg (fun x => P (0 + x * 1)) (Nat.one_mul n))
+      _ = P (0 + n) := (congrArg (fun x => P (0 + x)) (Nat.mul_one n))
+      _ = P n := congrArg P (Nat.zero_add n)
+-/
+#guard_msgs in
+example (n : Nat) (P : Nat → Prop) (h : P n): P (0 + 1 * n * 1) := by
+  calcify simp
+  exact h
