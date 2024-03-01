@@ -5,8 +5,10 @@ import Lean
 
 open Lean Elab Tactic Meta
 
-
 open Lean.Meta.Tactic.TryThis (delabToRefinableSyntax addSuggestion)
+
+-- NB: Pattern matching on terms using `mkAppN` is not good practice, as
+-- it generates very large and inefficient code.
 
 partial def mkEqTrans' (p₁ p₂ : Expr) : MetaM Expr := do
   if let mkApp6 (.const ``Eq.trans _) _ _ _ _ p₁₁ p₁₂ := p₁ then
