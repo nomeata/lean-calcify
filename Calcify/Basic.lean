@@ -124,13 +124,13 @@ def delabCalcTerm (e : Expr) : MetaM (TSyntax `term) := do
 
 def delabProof : Expr → MetaM (TSyntax `tactic)
   | mkApp4 (.const ``Eq.mpr _) _ _ p1 (.mvar _) => do
-    let calcTerm ← delabCalcTerm p1
-    `(tactic|apply $(mkIdent ``Eq.mpr) <| $calcTerm)
+    let t ← delabCalcProof p1
+    `(tactic|conv => tactic => $t:tactic)
 
   | mkApp4 (.const ``Eq.mpr _) _ _ p1 p2 => do
-    let calcTerm ← delabCalcTerm p1
+    let t ← delabCalcProof p1
     let restProof ← delabToRefinableSyntax p2
-    `(tactic|exact $(mkIdent ``Eq.mpr) $calcTerm $restProof)
+    `(tactic| ((conv => tactic => $t:tactic); refine $restProof)) -- how to avoid parentheses
 
   | e => delabCalcProof e
 
@@ -228,8 +228,8 @@ example (n : Nat) : 0 + n = 0 + (n * 1) := by
   calcify rw [Nat.mul_one, Nat.zero_add]
 
 /--
-info: Try this: apply
-  Eq.mpr <|
+info: Try this: conv =>
+  tactic =>
     calc
       P (0 + 1 * n * 1)
       _ = P (0 + n * 1) := (congrArg (fun x => P (0 + x * 1)) (Nat.one_mul n))
@@ -242,14 +242,14 @@ example (n : Nat) (P : Nat → Prop) (h : P n): P (0 + 1 * n * 1) := by
   exact h
 
 /--
-info: Try this: exact
-  Eq.mpr
-    (calc
-      P (0 + 1 * n * 1)
-      _ = P (0 + n * 1) := (congrArg (fun x => P (0 + x * 1)) (Nat.one_mul n))
-      _ = P (0 + n) := (congrArg (fun x => P (0 + x)) (Nat.mul_one n))
-      _ = P n := congrArg P (Nat.zero_add n))
-    h
+info: Try this: ((conv =>
+      tactic =>
+        calc
+          P (0 + 1 * n * 1)
+          _ = P (0 + n * 1) := (congrArg (fun x => P (0 + x * 1)) (Nat.one_mul n))
+          _ = P (0 + n) := (congrArg (fun x => P (0 + x)) (Nat.mul_one n))
+          _ = P n := congrArg P (Nat.zero_add n));
+  refine h)
 -/
 #guard_msgs in
 example (n : Nat) (P : Nat → Prop) (h : P n): P (0 + 1 * n * 1) := by
