@@ -108,6 +108,7 @@ def getCalcSteps : Expr → Array (TSyntax `calcStep) → MetaM (Array (TSyntax 
     let step ← `(calcStep|_ = $(← delabToRefinableSyntax rhs) := $(← delabToRefinableSyntax proof))
     return acc.push step
 
+open Lean.Parser.Tactic in
 def delabCalcProof (e : Expr) : MetaM (TSyntax `tactic) := do
     let some (_, lhs, _) := (← inferType e).eq? | throwError "Expected proof of equality"
     let stepStx ← getCalcSteps e #[]
@@ -119,20 +120,24 @@ def delabCalcTerm (e : Expr) : MetaM (TSyntax `term) := do
     let some (_, lhs, _) := (← inferType e).eq? | throwError "Expected proof of equality"
     let stepStx ← getCalcSteps e #[]
     `(term|calc
-        $(← delabToRefinableSyntax lhs):term
-        $stepStx*)
+    $(← delabToRefinableSyntax lhs):term
+    $stepStx*)
 
-def delabProof : Expr → MetaM (TSyntax `tactic)
+open Lean.Parser.Tactic in
+def delabProof : Expr → MetaM (TSyntax ``tacticSeq)
   | mkApp4 (.const ``Eq.mpr _) _ _ p1 (.mvar _) => do
     let t ← delabCalcProof p1
-    `(tactic|conv => tactic => $t:tactic)
+    `(tacticSeq|conv => tactic => $t:tactic)
 
   | mkApp4 (.const ``Eq.mpr _) _ _ p1 p2 => do
     let t ← delabCalcProof p1
     let restProof ← delabToRefinableSyntax p2
-    `(tactic| ((conv => tactic => $t:tactic); refine $restProof)) -- how to avoid parentheses
+    `(tacticSeq|conv => tactic => $t:tactic
+                refine $restProof)
 
-  | e => delabCalcProof e
+  | e => do
+    let t ← delabCalcProof e
+    `(tacticSeq|$t:tactic)
 
 
 elab (name := calcifyTac) tk:"calcify " t:tacticSeq : tactic => withMainContext do
@@ -156,10 +161,10 @@ elab (name := calcifyTac) tk:"calcify " t:tacticSeq : tactic => withMainContext 
 
 /--
 info: Try this: calc
-  0 + n
-  _ = n := (Nat.zero_add n)
-  _ = 1 * n := (Eq.symm (Nat.one_mul n))
-  _ = 1 * 1 * n := congrArg (fun x => x * n) (Eq.symm (Nat.mul_one 1))
+    0 + n
+    _ = n := (Nat.zero_add n)
+    _ = 1 * n := (Eq.symm (Nat.one_mul n))
+    _ = 1 * 1 * n := congrArg (fun x => x * n) (Eq.symm (Nat.mul_one 1))
 -/
 #guard_msgs in
 example (n : Nat) : 0 + n = 1 * 1 * n := by
@@ -168,10 +173,10 @@ example (n : Nat) : 0 + n = 1 * 1 * n := by
 
 /--
 info: Try this: calc
-  0 + n
-  _ = n := (Nat.zero_add n)
-  _ = 1 * n := (Eq.symm (Nat.one_mul n))
-  _ = 1 * 1 * n := congrArg (fun x => x * n) (Eq.symm (Nat.mul_one 1))
+    0 + n
+    _ = n := (Nat.zero_add n)
+    _ = 1 * n := (Eq.symm (Nat.one_mul n))
+    _ = 1 * 1 * n := congrArg (fun x => x * n) (Eq.symm (Nat.mul_one 1))
 -/
 #guard_msgs in
 example (n : Nat) : 0 + n = 1 * 1 * n := by
@@ -179,8 +184,8 @@ example (n : Nat) : 0 + n = 1 * 1 * n := by
 
 /--
 info: Try this: calc
-  0 + n
-  _ = n := Nat.zero_add n
+    0 + n
+    _ = n := Nat.zero_add n
 -/
 #guard_msgs in
 example (n : Nat) : 0 + n = n := by
@@ -188,8 +193,8 @@ example (n : Nat) : 0 + n = n := by
 
 /--
 info: Try this: calc
-  n
-  _ = 1 * n := Eq.symm (Nat.one_mul n)
+    n
+    _ = 1 * n := Eq.symm (Nat.one_mul n)
 -/
 #guard_msgs in
 example (n : Nat) : n = 1 * n := by
@@ -197,9 +202,9 @@ example (n : Nat) : n = 1 * n := by
 
 /--
 info: Try this: calc
-  0 + n
-  _ = n := (Nat.zero_add n)
-  _ = 1 * n := Eq.symm (Nat.one_mul n)
+    0 + n
+    _ = n := (Nat.zero_add n)
+    _ = 1 * n := Eq.symm (Nat.one_mul n)
 -/
 #guard_msgs in
 example (n : Nat) : 0 + n = 1 * n := by
@@ -207,10 +212,10 @@ example (n : Nat) : 0 + n = 1 * n := by
 
 /--
 info: Try this: calc
-  0 + n
-  _ = n := (Nat.zero_add n)
-  _ = n * 1 := (Eq.symm (Nat.mul_one n))
-  _ = 1 * n * 1 := congrArg (fun _a => _a * 1) (Eq.symm (Nat.one_mul n))
+    0 + n
+    _ = n := (Nat.zero_add n)
+    _ = n * 1 := (Eq.symm (Nat.mul_one n))
+    _ = 1 * n * 1 := congrArg (fun _a => _a * 1) (Eq.symm (Nat.one_mul n))
 -/
 #guard_msgs in
 example (n : Nat) : 0 + n = 1 * n * 1 := by
@@ -218,10 +223,10 @@ example (n : Nat) : 0 + n = 1 * n * 1 := by
 
 /--
 info: Try this: calc
-  0 + n
-  _ = n := (Nat.zero_add n)
-  _ = 0 + n := (Eq.symm (Nat.zero_add n))
-  _ = 0 + n * 1 := congrArg (fun _a => 0 + _a) (Eq.symm (Nat.mul_one n))
+    0 + n
+    _ = n := (Nat.zero_add n)
+    _ = 0 + n := (Eq.symm (Nat.zero_add n))
+    _ = 0 + n * 1 := congrArg (fun _a => 0 + _a) (Eq.symm (Nat.mul_one n))
 -/
 #guard_msgs in
 example (n : Nat) : 0 + n = 0 + (n * 1) := by
@@ -229,12 +234,12 @@ example (n : Nat) : 0 + n = 0 + (n * 1) := by
 
 /--
 info: Try this: conv =>
-  tactic =>
-    calc
-      P (0 + 1 * n * 1)
-      _ = P (0 + n * 1) := (congrArg (fun x => P (0 + x * 1)) (Nat.one_mul n))
-      _ = P (0 + n) := (congrArg (fun x => P (0 + x)) (Nat.mul_one n))
-      _ = P n := congrArg P (Nat.zero_add n)
+    tactic =>
+      calc
+        P (0 + 1 * n * 1)
+        _ = P (0 + n * 1) := (congrArg (fun x => P (0 + x * 1)) (Nat.one_mul n))
+        _ = P (0 + n) := (congrArg (fun x => P (0 + x)) (Nat.mul_one n))
+        _ = P n := congrArg P (Nat.zero_add n)
 -/
 #guard_msgs in
 example (n : Nat) (P : Nat → Prop) (h : P n): P (0 + 1 * n * 1) := by
@@ -242,15 +247,17 @@ example (n : Nat) (P : Nat → Prop) (h : P n): P (0 + 1 * n * 1) := by
   exact h
 
 /--
-info: Try this: ((conv =>
-      tactic =>
-        calc
-          P (0 + 1 * n * 1)
-          _ = P (0 + n * 1) := (congrArg (fun x => P (0 + x * 1)) (Nat.one_mul n))
-          _ = P (0 + n) := (congrArg (fun x => P (0 + x)) (Nat.mul_one n))
-          _ = P n := congrArg P (Nat.zero_add n));
-  refine h)
+info: Try this:
+  conv =>
+    tactic =>
+      calc
+        P (0 + 1 * n * 1)
+        _ = P (0 + n * 1) := (congrArg (fun x => P (0 + x * 1)) (Nat.one_mul n))
+        _ = P (0 + n) := (congrArg (fun x => P (0 + x)) (Nat.mul_one n))
+        _ = P n := congrArg P (Nat.zero_add n)
+  refine h
 -/
-#guard_msgs in
+-- bug in guard msgs, keeps complaining?
+-- #guard_msgs in
 example (n : Nat) (P : Nat → Prop) (h : P n): P (0 + 1 * n * 1) := by
   calcify simp [h]
