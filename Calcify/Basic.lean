@@ -269,7 +269,7 @@ info: Try this:
         _ = P n := congrArg P (Nat.zero_add n)
   refine h
 -/
--- bug in guard msgs, keeps complaining?
+-- wait for https://github.com/leanprover/lean4/issues/3571
 -- #guard_msgs in
 example (n : Nat) (P : Nat → Prop) (h : P n): P (0 + 1 * n * 1) := by
   calcify simp [h]
