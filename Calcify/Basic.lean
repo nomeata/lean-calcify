@@ -42,6 +42,13 @@ def mkCongrFun' (h x : Expr) : MetaM Expr := do
 def mkCongr' (x₁ f₂ : Expr) (p1 p2 : Expr) : MetaM Expr := do
     mkEqTrans' (← mkCongrFun' p1 x₁) (← mkCongrArg' f₂ p2)
 
+def mkFunExt' (p : Expr) : MetaM Expr := do
+  if let .lam n t (mkApp6 (.const ``Eq.trans _) _ _ _ _ p1 p2) bi := p then
+    return ← mkEqTrans'
+      (← mkFunExt' (.lam n t p1 bi))
+      (← mkFunExt' (.lam n t p2 bi))
+  mkFunExt p
+
 partial def mkEqMPR' (e1 e2 : Expr) : MetaM Expr := do
   -- A mpr applied to an congruence with equality can be turned into transitivities
   if let mkApp6 (.const ``congrArg [_u, _v]) _α _ _a _a'
@@ -81,17 +88,20 @@ partial def simplify : Expr → MetaM Expr
 
   -- Use the smart constructors above
 
-  | mkApp8 (.const ``congr [_u, _v]) _α _β _f₁ f₂ x₁ _x₂ p1 p2
+  | mkApp8 (.const ``congr _) _α _β _f₁ f₂ x₁ _x₂ p1 p2
   => do mkCongr' x₁ f₂ (← simplify p1) (← simplify p2)
 
   | mkApp2 (.const ``of_eq_true _) _ p
   => do mkOfEqTrue' (← simplify p)
 
-  | mkApp6 (.const ``congrFun [_u, _v]) _ _ _ _ p1 x
+  | mkApp6 (.const ``congrFun _) _ _ _ _ p1 x
   => do mkCongrFun' (← simplify p1) x
 
-  | mkApp6 (.const ``congrArg [_u, _v]) _α _β _a _a' f p
+  | mkApp6 (.const ``congrArg _) _α _β _a _a' f p
   => do mkCongrArg' f (← simplify p)
+
+  | mkApp5 (.const ``funext _) _ _ _ _ p
+  => do mkFunExt' (← simplify p)
 
   | mkApp4 (.const ``Eq.mpr _) _ _ p₁ p₂
   => do mkEqMPR' (← simplify p₁) (← simplify p₂)
@@ -263,3 +273,44 @@ info: Try this:
 -- #guard_msgs in
 example (n : Nat) (P : Nat → Prop) (h : P n): P (0 + 1 * n * 1) := by
   calcify simp [h]
+
+
+-- Rewriting under binders works:
+
+/--
+info: Try this: calc
+    List.map (fun x => 1 * (0 + x)) xs
+    _ = List.map (fun x => 1 * x) xs :=
+      (congrArg (fun x => List.map x xs) (funext fun n => congrArg (HMul.hMul 1) (Nat.zero_add n)))
+    _ = List.map (fun x => x) xs := (congrArg (fun x => List.map x xs) (funext fun n => Nat.one_mul n))
+    _ = xs := List.map_id' xs
+-/
+#guard_msgs in
+example xs : List.map (fun n => 1 * (0 + n)) xs = xs := by
+  calcify simp
+
+
+-- But contextual rewriting using congruence rules are not supported well.
+-- One could add ad-hoc support for common congruence rules (`ite_congr`, `dite_congr`), but that
+-- is not elegant.
+-- It might also be possible generically push such congruence rules past `Eq.trans`,
+-- but it will be quite hairy.
+
+/--
+info: Try this: conv =>
+    tactic =>
+      calc
+        P (if x = 0 then x + (2 * x + n) else 0 + n)
+        _ = P (if x = 0 then n else n) :=
+          (congrArg P
+            (ite_congr (Eq.refl (x = 0))
+              (fun a =>
+                Eq.trans (congr (congrArg HAdd.hAdd a) (Eq.trans (congrArg (fun x => 2 * x + n) a) (Nat.zero_add n)))
+                  (Nat.zero_add n))
+              fun a => Nat.zero_add n))
+        _ = P n := congrArg P (ite_self n)
+-/
+#guard_msgs in
+example (x n : Nat) (P : Nat → Prop) (hP : P n): P (if x = 0 then x + ((2 * x) + n) else 0 + n) := by
+  calcify (simp (config := {contextual := true}))
+  exact hP
