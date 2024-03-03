@@ -11,13 +11,12 @@ open Lean.Meta.Tactic.TryThis (delabToRefinableSyntax addSuggestion)
 -- it generates very large and inefficient code.
 
 partial def mkEqTrans' (p₁ p₂ : Expr) : MetaM Expr := do
-  if let mkApp6 (.const ``Eq.trans _) _ _ _ _ p₁₁ p₁₂ := p₁ then
-    mkEqTrans' p₁₁ (← mkEqTrans' p₁₂ p₂)
-  else
-    mkEqTrans p₁ p₂
+  match_expr p₁ with
+  | Eq.trans _ _ _ _ p₁₁ p₁₂ => mkEqTrans' p₁₁ (← mkEqTrans' p₁₂ p₂)
+  | _ => mkEqTrans p₁ p₂
 
 
-def mkCongrArg' (f p : Expr) : MetaM Expr := do
+partial def mkCongrArg' (f p : Expr) : MetaM Expr := do
   -- The function is constant? This becomes refl
   if let .lam _ _ b _ := f then
     if ! b.hasLooseBVars then
@@ -28,10 +27,10 @@ def mkCongrArg' (f p : Expr) : MetaM Expr := do
     return p
 
   -- Push congr into transitivity
-  if let mkApp6 (.const ``Eq.trans _) _ _ _ _ p1 p2 := p then
-    return ← mkEqTrans' (← mkCongrArg' f p1) (← mkCongrArg' f p2)
-
-  mkCongrArg f p
+  match_expr p with
+  | Eq.trans _ _ _ _ p₁ p₂ => do
+    return ← mkEqTrans' (← mkCongrArg' f p₁) (← mkCongrArg' f p₂)
+  | _ => mkCongrArg f p
 
 -- congrFun is a special case of congrArg
 def mkCongrFun' (h x : Expr) : MetaM Expr := do
@@ -50,72 +49,56 @@ def mkFunExt' (p : Expr) : MetaM Expr := do
   mkFunExt p
 
 partial def mkEqMPR' (e1 e2 : Expr) : MetaM Expr := do
-  -- A mpr applied to an congruence with equality can be turned into transitivities
-  if let mkApp6 (.const ``congrArg [_u, _v]) _α _ _a _a'
-          (.lam n t (mkApp3 (.const ``Eq _) _β b₁ b₂) bi) p1 := e1 then
-    return ← mkEqTrans' (← mkCongrArg' (.lam n t b₁ bi) p1)
-          (← mkEqTrans' e2 (← mkCongrArg' (.lam n t b₂ bi) (← mkEqSymm p1)))
+  match_expr e1 with
+  | congrArg _ _ _ _ f p1 => do
+    -- A mpr applied to an congruence with equality can be turned into transitivities
+    if let .lam n t (mkApp3 (.const ``Eq _) _β b₁ b₂) bi := f then
+      return ← mkEqTrans' (← mkCongrArg' (.lam n t b₁ bi) p1)
+            (← mkEqTrans' e2 (← mkCongrArg' (.lam n t b₂ bi) (← mkEqSymm p1)))
 
-  -- Special case of the above, with an eta-contracted congruence
-  if let mkApp6 (.const ``congrArg [_u, _v]) _α _ _a _a'
-          (mkApp2 (.const ``Eq _) _β _b₁) p1 := e1 then
-    return ← mkEqTrans' e2 (← mkEqSymm p1)
+    -- Special case of the above, with an eta-contracted congruence
+    match_expr f with
+    | Eq _β _b₁ => return ← mkEqTrans' e2 (← mkEqSymm p1)
+    | _ => pure ()
+  | _ => pure ()
 
    -- A mpr applied to an mpr can be turned into a transitivity
-  if let mkApp4 (.const ``Eq.mpr _) _ _ p2 p3 := e2 then
-    return ← mkEqMPR' (← mkEqTrans' e1 p2) p3
+  match_expr e2 with
+  | Eq.mpr _ _ p2 p3 => return ← mkEqMPR' (← mkEqTrans' e1 p2) p3
+  | _ => pure ()
 
   mkEqMPR e1 e2
 
-partial def mkOfEqTrue' : Expr → MetaM Expr
-  | mkApp2 (.const ``eq_self _) _α a
-  => mkEqRefl a
+partial def mkOfEqTrue' (p : Expr) : MetaM Expr := do
+  match_expr p with
+  | eq_self _α a => mkEqRefl a
+  | eq_true _P p => pure p
+  | Eq.trans _ _ _ _ p1 p2 => do mkEqMPR' p1 (← mkOfEqTrue' p2)
+  | _ => do mkOfEqTrue p
 
-  | mkApp2 (.const ``eq_true []) _P p
-  => pure p
-
-  | mkApp6 (.const ``Eq.trans [_u]) _ _ _ _ p1 p2
-  => do mkEqMPR' p1 (← mkOfEqTrue' p2)
-
-  | p
-  => do mkOfEqTrue p
-
-partial def simplify : Expr → MetaM Expr
+partial def simplify (e : Expr) : MetaM Expr := do
+  match_expr e with
 
   -- eliminate id application, and hope for the best
-  | mkApp2 (.const ``id _) _ p
-  => simplify p
+  | id _ p => simplify p
 
   -- Use the smart constructors above
+  | congr _α _β _f₁ f₂ x₁ _x₂ p1 p2 => do mkCongr' x₁ f₂ (← simplify p1) (← simplify p2)
+  | of_eq_true _ p                  => do mkOfEqTrue' (← simplify p)
+  | congrFun _ _ _ _ p1 x           => do mkCongrFun' (← simplify p1) x
+  | congrArg _α _β _a _a' f p       => do mkCongrArg' f (← simplify p)
+  | funext _ _ _ _ p                => do mkFunExt' (← simplify p)
+  | Eq.mpr _ _ p₁ p₂                => do mkEqMPR' (← simplify p₁) (← simplify p₂)
+  | Eq.trans _α _a _b _c p1 p2      => do mkEqTrans' (← simplify p1) (← simplify p2)
+  | _                               => pure e
 
-  | mkApp8 (.const ``congr _) _α _β _f₁ f₂ x₁ _x₂ p1 p2
-  => do mkCongr' x₁ f₂ (← simplify p1) (← simplify p2)
-
-  | mkApp2 (.const ``of_eq_true _) _ p
-  => do mkOfEqTrue' (← simplify p)
-
-  | mkApp6 (.const ``congrFun _) _ _ _ _ p1 x
-  => do mkCongrFun' (← simplify p1) x
-
-  | mkApp6 (.const ``congrArg _) _α _β _a _a' f p
-  => do mkCongrArg' f (← simplify p)
-
-  | mkApp5 (.const ``funext _) _ _ _ _ p
-  => do mkFunExt' (← simplify p)
-
-  | mkApp4 (.const ``Eq.mpr _) _ _ p₁ p₂
-  => do mkEqMPR' (← simplify p₁) (← simplify p₂)
-
-  | mkApp6 (.const ``Eq.trans _) _α _a _b _c p1 p2
-  => do mkEqTrans' (← simplify p1) (← simplify p2)
-
-  | e => pure e
-
-def getCalcSteps : Expr → Array (TSyntax `calcStep) → MetaM (Array (TSyntax `calcStep))
-  | mkApp6 (.const ``Eq.trans _) _ _ rhs _ proof p2, acc => do
+partial def getCalcSteps (proof : Expr) (acc : Array (TSyntax `calcStep)) :
+    MetaM (Array (TSyntax `calcStep)) :=
+  match_expr proof with
+  | Eq.trans _ _ rhs _ proof p2 => do
     let step ← `(calcStep|_ = $(← delabToRefinableSyntax rhs) := $(← delabToRefinableSyntax proof))
     getCalcSteps p2 (acc.push step)
-  | proof, acc => do
+  | _ => do
     let some (_, _, rhs) := (← inferType proof).eq? | throwError "Expected proof of equality"
     let step ← `(calcStep|_ = $(← delabToRefinableSyntax rhs) := $(← delabToRefinableSyntax proof))
     return acc.push step
@@ -136,21 +119,19 @@ def delabCalcTerm (e : Expr) : MetaM (TSyntax `term) := do
     $stepStx*)
 
 open Lean.Parser.Tactic in
-def delabProof : Expr → MetaM (TSyntax ``tacticSeq)
-  | mkApp4 (.const ``Eq.mpr _) _ _ p1 (.mvar _) => do
+def delabProof (e : Expr) : MetaM (TSyntax ``tacticSeq) :=
+  match_expr e with
+  | Eq.mpr _ _ p1 p2 => do
     let t ← delabCalcProof p1
-    `(tacticSeq|conv => tactic => $t:tactic)
-
-  | mkApp4 (.const ``Eq.mpr _) _ _ p1 p2 => do
-    let t ← delabCalcProof p1
-    let restProof ← delabToRefinableSyntax p2
-    `(tacticSeq|conv => tactic => $t:tactic
-                refine $restProof)
-
-  | e => do
+    if p2.isMVar then
+      `(tacticSeq|conv => tactic => $t:tactic)
+    else
+      let restProof ← delabToRefinableSyntax p2
+      `(tacticSeq|conv => tactic => $t:tactic
+                  refine $restProof)
+  | _ => do
     let t ← delabCalcProof e
     `(tacticSeq|$t:tactic)
-
 
 elab (name := calcifyTac) tk:"calcify " t:tacticSeq : tactic => withMainContext do
   let goalMVar ← getMainGoal
@@ -158,7 +139,6 @@ elab (name := calcifyTac) tk:"calcify " t:tacticSeq : tactic => withMainContext 
   let proof ← instantiateMVars (mkMVar goalMVar)
   let proof ← simplify proof
   check proof
-  -- let proofStx ← delabToRefinableSyntax proof
   let tactic ← delabProof proof
 
   /-
