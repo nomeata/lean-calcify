@@ -77,20 +77,23 @@ partial def mkOfEqTrue' (p : Expr) : MetaM Expr := do
   | _ => do mkOfEqTrue p
 
 partial def simplify (e : Expr) : MetaM Expr := do
-  match_expr e with
+  lambdaTelescope e fun xs e => do
+    let e' ← match_expr e with
 
-  -- eliminate id application, and hope for the best
-  | id _ p => simplify p
+    -- eliminate id application, and hope for the best
+    | id _ p => simplify p
 
-  -- Use the smart constructors above
-  | congr _α _β _f₁ f₂ x₁ _x₂ p1 p2 => do mkCongr' x₁ f₂ (← simplify p1) (← simplify p2)
-  | of_eq_true _ p                  => do mkOfEqTrue' (← simplify p)
-  | congrFun _ _ _ _ p1 x           => do mkCongrFun' (← simplify p1) x
-  | congrArg _α _β _a _a' f p       => do mkCongrArg' f (← simplify p)
-  | funext _ _ _ _ p                => do mkFunExt' (← simplify p)
-  | Eq.mpr _ _ p₁ p₂                => do mkEqMPR' (← simplify p₁) (← simplify p₂)
-  | Eq.trans _α _a _b _c p1 p2      => do mkEqTrans' (← simplify p1) (← simplify p2)
-  | _                               => pure e
+    -- Use the smart constructors above
+    | congr _α _β _f₁ f₂ x₁ _x₂ p1 p2 => do mkCongr' x₁ f₂ (← simplify p1) (← simplify p2)
+    | of_eq_true _ p                  => do mkOfEqTrue' (← simplify p)
+    | congrFun _ _ _ _ p1 x           => do mkCongrFun' (← simplify p1) x
+    | congrArg _α _β _a _a' f p       => do mkCongrArg' f (← simplify p)
+    | funext _ _ _ _ p                => do mkFunExt' (← simplify p)
+    | Eq.mpr _ _ p₁ p₂                => do mkEqMPR' (← simplify p₁) (← simplify p₂)
+    | Eq.trans _α _a _b _c p1 p2      => do mkEqTrans' (← simplify p1) (← simplify p2)
+    | _                               => pure e
+    mkLambdaFVars xs e'
+
 
 partial def getCalcSteps (proof : Expr) (acc : Array (TSyntax `calcStep)) :
     MetaM (Array (TSyntax `calcStep)) :=
@@ -259,14 +262,16 @@ example (n : Nat) (P : Nat → Prop) (h : P n): P (0 + 1 * n * 1) := by
 
 /--
 info: Try this: calc
-    List.map (fun x => 1 * (0 + x)) xs
+    List.map (fun x => (0 + 1) * (0 + x)) xs
+    _ = List.map (fun x => 1 * (0 + x)) xs :=
+      (congrArg (fun x => List.map x xs) (funext fun n => congrArg (fun x => x * (0 + n)) (Nat.zero_add 1)))
     _ = List.map (fun x => 1 * x) xs :=
       (congrArg (fun x => List.map x xs) (funext fun n => congrArg (HMul.hMul 1) (Nat.zero_add n)))
     _ = List.map (fun x => x) xs := (congrArg (fun x => List.map x xs) (funext fun n => Nat.one_mul n))
     _ = xs := List.map_id' xs
 -/
 #guard_msgs in
-example xs : List.map (fun n => 1 * (0 + n)) xs = xs := by
+example xs : List.map (fun n => (0 + 1) * (0 + n)) xs = xs := by
   calcify simp
 
 
@@ -280,10 +285,10 @@ example xs : List.map (fun n => 1 * (0 + n)) xs = xs := by
 info: Try this: conv =>
     tactic =>
       calc
-        P (if x = 0 then x + (2 * x + n) else 0 + n)
+        P (if 0 + 1 * x = 0 then x + (2 * x + n) else 0 + n)
         _ = P (if x = 0 then n else n) :=
           (congrArg P
-            (ite_congr (Eq.refl (x = 0))
+            (ite_congr (congrArg (fun x => x = 0) (Eq.trans (congrArg (HAdd.hAdd 0) (Nat.one_mul x)) (Nat.zero_add x)))
               (fun a =>
                 Eq.trans (congr (congrArg HAdd.hAdd a) (Eq.trans (congrArg (fun x => 2 * x + n) a) (Nat.zero_add n)))
                   (Nat.zero_add n))
@@ -291,7 +296,7 @@ info: Try this: conv =>
         _ = P n := congrArg P (ite_self n)
 -/
 #guard_msgs in
-example (x n : Nat) (P : Nat → Prop) (hP : P n): P (if x = 0 then x + ((2 * x) + n) else 0 + n) := by
+example (x n : Nat) (P : Nat → Prop) (hP : P n): P (if 0 + (1 * x) = 0 then x + ((2 * x) + n) else 0 + n) := by
   calcify (simp (config := {contextual := true}))
   exact hP
 
