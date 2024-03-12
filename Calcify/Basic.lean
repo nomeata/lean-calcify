@@ -7,6 +7,13 @@ open Lean Elab Tactic Meta
 
 open Lean.Meta.Tactic.TryThis (delabToRefinableSyntax addSuggestion)
 
+
+-- copied from std4/Std/Lean/Meta/Basic.lean
+/-- Solve a goal by synthesizing an instance. -/
+-- FIXME: probably can just be `g.inferInstance` once leanprover/lean4#2054 is fixed
+def Lean.MVarId.synthInstance (g : MVarId) : MetaM Unit := do
+  g.assign (← Lean.Meta.synthInstance (← g.getType))
+
 -- NB: Pattern matching on terms using `mkAppN` is not good practice, as
 -- it generates very large and inefficient code.
 
@@ -69,6 +76,84 @@ partial def mkEqMPR' (e1 e2 : Expr) : MetaM Expr := do
 
   mkEqMPR e1 e2
 
+/-
+The following four functions push `ite_congr` past transitivity.
+It is quite ugly and hairy, and should be generalized to arbitrary `congr`
+lemmas.
+-/
+
+partial def mkIteCongr1 (goal : MVarId) (p : Expr) : MetaM Unit := do
+  match_expr p with
+  | Eq.refl _ _ => goal.refl
+  | Eq.trans _ _ _ _ p1 p2 => do
+    let [goal1, goal2, _] ← goal.applyConst `Eq.trans | throwError "Could not apply trans"
+    mkIteCongr1 goal1 p1
+    mkIteCongr1 goal2 p2
+  | _ => do
+    -- logInfo m!"here at {p}\n{goal}"
+    let e ← mkConstWithFreshMVarLevels ``ite_congr
+    let (mvars, _) ← forallMetaTelescopeReducing (← inferType e)
+    assert! mvars.size == 12
+    let _ ← isDefEq (mkMVar goal) (mkAppN e mvars)
+    let _ ← isDefEq mvars[9]! p
+    mvars[8]!.mvarId!.synthInstance
+    (← mvars[10]!.mvarId!.intro1).2.refl
+    (← mvars[11]!.mvarId!.intro1).2.refl
+    -- logInfo m!"{mvars}"
+
+partial def mkIteCongr2 (goal : MVarId) (p : Expr) : MetaM Unit := do
+  if let .lam n t b bi := p then
+    match_expr b with
+    | Eq.refl _ _ => do
+      goal.refl
+      return
+    | Eq.trans _ _ _ _ p1 p2 => do
+      let [goal1, goal2, _] ← goal.applyConst `Eq.trans | throwError "Could not apply trans"
+      mkIteCongr2 goal1 (.lam n t p1 bi)
+      mkIteCongr2 goal2 (.lam n t p2 bi)
+      return
+    | _ => pure ()
+
+  let e ← mkConstWithFreshMVarLevels ``ite_congr
+  let (mvars, _) ← forallMetaTelescopeReducing (← inferType e)
+  assert! mvars.size == 12
+  let _ ← isDefEq (mkMVar goal) (mkAppN e mvars)
+  mvars[9]!.mvarId!.refl
+  mvars[8]!.mvarId!.synthInstance
+  _ ← isDefEq mvars[10]! p
+  (← mvars[11]!.mvarId!.intro1).2.refl
+
+partial def mkIteCongr3 (goal : MVarId) (p : Expr) : MetaM Unit := do
+  if let .lam n t b bi := p then
+    match_expr b with
+    | Eq.refl _ _ => do
+      goal.refl
+      return
+    | Eq.trans _ _ _ _ p1 p2 => do
+      let [goal1, goal2, _] ← goal.applyConst `Eq.trans | throwError "Could not apply trans"
+      mkIteCongr3 goal1 (.lam n t p1 bi)
+      mkIteCongr3 goal2 (.lam n t p2 bi)
+      return
+    | _ => pure ()
+
+  let e ← mkConstWithFreshMVarLevels ``ite_congr
+  let (mvars, _) ← forallMetaTelescopeReducing (← inferType e)
+  assert! mvars.size == 12
+  let _ ← isDefEq (mkMVar goal) (mkAppN e mvars)
+  mvars[9]!.mvarId!.refl
+  mvars[8]!.mvarId!.synthInstance
+  (← mvars[10]!.mvarId!.intro1).2.refl
+  _ ← isDefEq mvars[11]! p
+
+def mkIteCongr (goal p1 p2 p3 : Expr) : MetaM Expr := do
+  let mvar ← mkFreshExprSyntheticOpaqueMVar goal
+  let [goal1, goal2, _] ← mvar.mvarId!.applyConst `Eq.trans | throwError "Could not apply trans"
+  mkIteCongr1 goal1 p1
+  let [goal2, goal3, _] ← goal2.applyConst `Eq.trans| throwError "Could not apply trans"
+  mkIteCongr2 goal2 p2
+  mkIteCongr3 goal3 p3
+  instantiateMVars mvar
+
 partial def mkOfEqTrue' (p : Expr) : MetaM Expr := do
   match_expr p with
   | eq_self _α a => mkEqRefl a
@@ -91,6 +176,8 @@ partial def simplify (e : Expr) : MetaM Expr := do
     | funext _ _ _ _ p                => do mkFunExt' (← simplify p)
     | Eq.mpr _ _ p₁ p₂                => do mkEqMPR' (← simplify p₁) (← simplify p₂)
     | Eq.trans _α _a _b _c p1 p2      => do mkEqTrans' (← simplify p1) (← simplify p2)
+    | ite_congr _α _b _c _x _y _u _v _i1 _i2 p1 p2 p3 =>
+      mkIteCongr (← inferType e) (← simplify p1) (← simplify p2) (← simplify p3)
     | _                               => pure e
     mkLambdaFVars xs e'
 
@@ -276,23 +363,58 @@ example xs : List.map (fun n => (0 + 1) * (0 + n)) xs = xs := by
 
 
 -- But contextual rewriting using congruence rules are not supported well.
--- One could add ad-hoc support for common congruence rules (`ite_congr`, `dite_congr`), but that
--- is not elegant.
--- It might also be possible generically push such congruence rules past `Eq.trans`,
--- but it will be quite hairy.
+-- We have ad-hoc support for `ite_congr` (see above), but it is far from elegant.
+-- Maybe it could be implemented fully generically, but it would be quite hairy I fear.
+
+/--
+info: Try this: calc
+    if 0 + 1 * x = 0 then x + (2 * x + n) else 0 + n
+    _ = if 0 + x = 0 then x + (2 * x + n) else 0 + n :=
+      (ite_congr (congrArg (fun x => 0 + x = 0) (Nat.one_mul x)) (fun a => Eq.refl (x + (2 * x + n))) fun a =>
+        Eq.refl (0 + n))
+    _ = if x = 0 then x + (2 * x + n) else 0 + n :=
+      (ite_congr (congrArg (fun x => x = 0) (Nat.zero_add x)) (fun a => Eq.refl (x + (2 * x + n))) fun a =>
+        Eq.refl (0 + n))
+    _ = if x = 0 then 0 + (2 * x + n) else 0 + n :=
+      (ite_congr (Eq.refl (x = 0)) (fun a => congrArg (fun x_1 => x_1 + (2 * x + n)) a) fun a => Eq.refl (0 + n))
+    _ = if x = 0 then 0 + (2 * 0 + n) else 0 + n :=
+      (ite_congr (Eq.refl (x = 0)) (fun a => congrArg (fun x => 0 + (2 * x + n)) a) fun a => Eq.refl (0 + n))
+    _ = if x = 0 then 0 + n else 0 + n :=
+      (ite_congr (Eq.refl (x = 0)) (fun a => congrArg (HAdd.hAdd 0) (Nat.zero_add n)) fun a => Eq.refl (0 + n))
+    _ = if x = 0 then n else 0 + n := (ite_congr (Eq.refl (x = 0)) (fun a => Nat.zero_add n) fun a => Eq.refl (0 + n))
+    _ = if x = 0 then n else n := (ite_congr (Eq.refl (x = 0)) (fun a => Eq.refl n) fun a => Nat.zero_add n)
+    _ = n := ite_self n
+-/
+#guard_msgs in
+example (x n : Nat) : (if 0 + (1 * x) = 0 then x + ((2 * x) + n) else 0 + n) = n := by
+  calcify (simp (config := {contextual := true}))
 
 /--
 info: Try this: conv =>
     tactic =>
       calc
         P (if 0 + 1 * x = 0 then x + (2 * x + n) else 0 + n)
-        _ = P (if x = 0 then n else n) :=
+        _ = P (if 0 + x = 0 then x + (2 * x + n) else 0 + n) :=
           (congrArg P
-            (ite_congr (congrArg (fun x => x = 0) (Eq.trans (congrArg (HAdd.hAdd 0) (Nat.one_mul x)) (Nat.zero_add x)))
-              (fun a =>
-                Eq.trans (congr (congrArg HAdd.hAdd a) (Eq.trans (congrArg (fun x => 2 * x + n) a) (Nat.zero_add n)))
-                  (Nat.zero_add n))
-              fun a => Nat.zero_add n))
+            (ite_congr (congrArg (fun x => 0 + x = 0) (Nat.one_mul x)) (fun a => Eq.refl (x + (2 * x + n))) fun a =>
+              Eq.refl (0 + n)))
+        _ = P (if x = 0 then x + (2 * x + n) else 0 + n) :=
+          (congrArg P
+            (ite_congr (congrArg (fun x => x = 0) (Nat.zero_add x)) (fun a => Eq.refl (x + (2 * x + n))) fun a =>
+              Eq.refl (0 + n)))
+        _ = P (if x = 0 then 0 + (2 * x + n) else 0 + n) :=
+          (congrArg P
+            (ite_congr (Eq.refl (x = 0)) (fun a => congrArg (fun x_1 => x_1 + (2 * x + n)) a) fun a => Eq.refl (0 + n)))
+        _ = P (if x = 0 then 0 + (2 * 0 + n) else 0 + n) :=
+          (congrArg P
+            (ite_congr (Eq.refl (x = 0)) (fun a => congrArg (fun x => 0 + (2 * x + n)) a) fun a => Eq.refl (0 + n)))
+        _ = P (if x = 0 then 0 + n else 0 + n) :=
+          (congrArg P
+            (ite_congr (Eq.refl (x = 0)) (fun a => congrArg (HAdd.hAdd 0) (Nat.zero_add n)) fun a => Eq.refl (0 + n)))
+        _ = P (if x = 0 then n else 0 + n) :=
+          (congrArg P (ite_congr (Eq.refl (x = 0)) (fun a => Nat.zero_add n) fun a => Eq.refl (0 + n)))
+        _ = P (if x = 0 then n else n) :=
+          (congrArg P (ite_congr (Eq.refl (x = 0)) (fun a => Eq.refl n) fun a => Nat.zero_add n))
         _ = P n := congrArg P (ite_self n)
 -/
 #guard_msgs in
