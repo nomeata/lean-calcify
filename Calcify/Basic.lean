@@ -294,3 +294,22 @@ info: Try this: conv =>
 example (x n : Nat) (P : Nat → Prop) (hP : P n): P (if x = 0 then x + ((2 * x) + n) else 0 + n) := by
   calcify (simp (config := {contextual := true}))
   exact hP
+
+@[congr]
+theorem List.map_congr {f g : α → β} : ∀ {l : List α}, (∀ x ∈ l, f x = g x) → map f l = map g l
+  | [], _ => rfl
+  | a :: l, h => by
+    let ⟨h₁, h₂⟩ := forall_mem_cons.1 h
+    rw [map, map, h₁, map_congr h₂]
+
+/--
+info: Try this: calc
+    List.map (fun n => f n) xs
+    _ = List.map (fun x => x) xs :=
+      (List.map_congr fun x a => Eq.trans ((fun n a => h n a) x (of_eq_true (eq_true a))) (Nat.one_mul x))
+    _ = xs := List.map_id' xs
+-/
+#guard_msgs in
+example xs (f : Nat → Nat) (h : ∀ n, n ∈ xs → f n = 1 * n) :
+    List.map (fun n => f n) xs = xs := by
+  calcify simp (config := {contextual := true}) [h]
