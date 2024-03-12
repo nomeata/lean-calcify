@@ -42,7 +42,9 @@ Then that proof term is turned into a `calc` proof.
 Contact
 -------
 
-This was created by Joachim Breitner. Feel free to report issues, create PRs with test cases and more features, or [reach out on Zulip](https://leanprover.zulipchat.com/#user/470149). 
+This was created by Joachim Breitner. Feel free to report issues, create PRs
+with test cases and more features, or [reach out on
+Zulip](https://leanprover.zulipchat.com/#user/470149). 
 
 
 
