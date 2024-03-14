@@ -112,7 +112,18 @@ partial def mkIteCongr2 (goal : MVarId) (p : Expr) : MetaM Unit := do
       mkIteCongr2 goal1 (.lam n t p1 bi)
       mkIteCongr2 goal2 (.lam n t p2 bi)
       return
-    | _ => pure ()
+    | _ =>
+      unless b.hasLooseBVars do
+        -- Rewriting isn't actually contextual, use simple congr
+        let some (_, lhs, _rhs) := (← goal.getType).eq?
+          | throwError "Expected equality goal, got{indentExpr (← goal.getType)}"
+        match_expr lhs with
+        | ite α c inst _t e =>
+          let u ← getLevel α
+          let _ ← isDefEq (mkMVar goal)
+            (← mkCongrFun' (← mkCongrArg' (mkApp3 (.const ``ite [u]) α c inst) b) e)
+        | _ => pure ()
+      pure ()
 
   let e ← mkConstWithFreshMVarLevels ``ite_congr
   let (mvars, _) ← forallMetaTelescopeReducing (← inferType e)
@@ -134,7 +145,17 @@ partial def mkIteCongr3 (goal : MVarId) (p : Expr) : MetaM Unit := do
       mkIteCongr3 goal1 (.lam n t p1 bi)
       mkIteCongr3 goal2 (.lam n t p2 bi)
       return
-    | _ => pure ()
+    | _ =>
+      unless b.hasLooseBVars do
+        -- Rewriting isn't actually contextual, use simple congr
+        let some (_, lhs, _rhs) := (← goal.getType).eq?
+          | throwError "Expected equality goal, got{indentExpr (← goal.getType)}"
+        match_expr lhs with
+        | ite α c inst t _e =>
+          let u ← getLevel α
+          let _ ← isDefEq (mkMVar goal)
+            (← mkCongrArg' (mkApp4 (.const ``ite [u]) α c inst t) b)
+        | _ => pure ()
 
   let e ← mkConstWithFreshMVarLevels ``ite_congr
   let (mvars, _) ← forallMetaTelescopeReducing (← inferType e)
@@ -378,10 +399,9 @@ info: Try this: calc
       (ite_congr (Eq.refl (x = 0)) (fun a => congrArg (fun x_1 => x_1 + (2 * x + n)) a) fun a => Eq.refl (0 + n))
     _ = if x = 0 then 0 + (2 * 0 + n) else 0 + n :=
       (ite_congr (Eq.refl (x = 0)) (fun a => congrArg (fun x => 0 + (2 * x + n)) a) fun a => Eq.refl (0 + n))
-    _ = if x = 0 then 0 + n else 0 + n :=
-      (ite_congr (Eq.refl (x = 0)) (fun a => congrArg (HAdd.hAdd 0) (Nat.zero_add n)) fun a => Eq.refl (0 + n))
-    _ = if x = 0 then n else 0 + n := (ite_congr (Eq.refl (x = 0)) (fun a => Nat.zero_add n) fun a => Eq.refl (0 + n))
-    _ = if x = 0 then n else n := (ite_congr (Eq.refl (x = 0)) (fun a => Eq.refl n) fun a => Nat.zero_add n)
+    _ = if x = 0 then 0 + n else 0 + n := (congrArg (fun x_1 => if x = 0 then 0 + x_1 else 0 + n) (Nat.zero_add n))
+    _ = if x = 0 then n else 0 + n := (congrArg (fun x_1 => if x = 0 then x_1 else 0 + n) (Nat.zero_add n))
+    _ = if x = 0 then n else n := (congrArg (fun x_1 => if x = 0 then n else x_1) (Nat.zero_add n))
     _ = n := ite_self n
 -/
 #guard_msgs in
@@ -408,12 +428,9 @@ info: Try this: conv =>
           (congrArg P
             (ite_congr (Eq.refl (x = 0)) (fun a => congrArg (fun x => 0 + (2 * x + n)) a) fun a => Eq.refl (0 + n)))
         _ = P (if x = 0 then 0 + n else 0 + n) :=
-          (congrArg P
-            (ite_congr (Eq.refl (x = 0)) (fun a => congrArg (HAdd.hAdd 0) (Nat.zero_add n)) fun a => Eq.refl (0 + n)))
-        _ = P (if x = 0 then n else 0 + n) :=
-          (congrArg P (ite_congr (Eq.refl (x = 0)) (fun a => Nat.zero_add n) fun a => Eq.refl (0 + n)))
-        _ = P (if x = 0 then n else n) :=
-          (congrArg P (ite_congr (Eq.refl (x = 0)) (fun a => Eq.refl n) fun a => Nat.zero_add n))
+          (congrArg (fun x_1 => P (if x = 0 then 0 + x_1 else 0 + n)) (Nat.zero_add n))
+        _ = P (if x = 0 then n else 0 + n) := (congrArg (fun x_1 => P (if x = 0 then x_1 else 0 + n)) (Nat.zero_add n))
+        _ = P (if x = 0 then n else n) := (congrArg (fun x_1 => P (if x = 0 then n else x_1)) (Nat.zero_add n))
         _ = P n := congrArg P (ite_self n)
 -/
 #guard_msgs in
