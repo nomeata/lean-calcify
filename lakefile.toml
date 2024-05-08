@@ -1,0 +1,5 @@
+name = "calcify"
+defaultTargets = ["Calcify"]
+
+[[lean_lib]]
+name = "Calcify"

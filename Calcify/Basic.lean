@@ -42,7 +42,7 @@ partial def mkCongrArg' (f p : Expr) : MetaM Expr := do
 -- congrFun is a special case of congrArg
 def mkCongrFun' (h x : Expr) : MetaM Expr := do
   let some (α, _f₁, _f₂) := (← inferType h).eq? | throwError "Expected proof of equality"
-  mkCongrArg' (.lam "f" α (.app (.bvar 0) x) .default) h
+  mkCongrArg' (.lam `f α (.app (.bvar 0) x) .default) h
 
 -- congr can be written as a composition of congrFun and congrArg
 def mkCongr' (x₁ f₂ : Expr) (p1 p2 : Expr) : MetaM Expr := do
