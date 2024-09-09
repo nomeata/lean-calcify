@@ -203,8 +203,8 @@ partial def simplify (e : Expr) : MetaM Expr := do
     mkLambdaFVars xs e'
 
 
-partial def getCalcSteps (proof : Expr) (acc : Array (TSyntax `calcStep)) :
-    MetaM (Array (TSyntax `calcStep)) :=
+partial def getCalcSteps (proof : Expr) (acc : Array (TSyntax ``calcStep)) :
+    MetaM (Array (TSyntax ``calcStep)) :=
   match_expr proof with
   | Eq.trans _ _ rhs _ proof p2 => do
     let step ← `(calcStep|_ = $(← delabToRefinableSyntax rhs) := $(← delabToRefinableSyntax proof))
@@ -372,7 +372,7 @@ info: Try this: calc
     List.map (fun x => (0 + 1) * (0 + x)) xs
     _ = List.map (fun x => 1 * (0 + x)) xs :=
       (congrArg (fun x => List.map x xs) (funext fun n => congrArg (fun x => x * (0 + n)) (Nat.zero_add 1)))
-    _ = List.map (fun x => 1 * x) xs :=
+    _ = List.map (HMul.hMul 1) xs :=
       (congrArg (fun x => List.map x xs) (funext fun n => congrArg (HMul.hMul 1) (Nat.zero_add n)))
     _ = List.map (fun x => x) xs := (congrArg (fun x => List.map x xs) (funext fun n => Nat.one_mul n))
     _ = xs := List.map_id' xs
