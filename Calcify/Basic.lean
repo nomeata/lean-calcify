@@ -375,7 +375,7 @@ info: Try this: calc
     _ = List.map (HMul.hMul 1) xs :=
       (congrArg (fun x => List.map x xs) (funext fun n => congrArg (HMul.hMul 1) (Nat.zero_add n)))
     _ = List.map (fun x => x) xs := (congrArg (fun x => List.map x xs) (funext fun n => Nat.one_mul n))
-    _ = xs := List.map_id' xs
+    _ = id xs := congrArg (fun x => x xs) List.map_id_fun'
 -/
 #guard_msgs in
 example xs : List.map (fun n => (0 + 1) * (0 + n)) xs = xs := by
@@ -450,7 +450,7 @@ info: Try this: calc
     List.map (fun n => f n) xs
     _ = List.map (fun x => x) xs :=
       (List.map_congr fun x a => Eq.trans ((fun n a => h n a) x (of_eq_true (eq_true a))) (Nat.one_mul x))
-    _ = xs := List.map_id' xs
+    _ = id xs := congrArg (fun x => x xs) List.map_id_fun'
 -/
 #guard_msgs in
 example xs (f : Nat → Nat) (h : ∀ n, n ∈ xs → f n = 1 * n) :
