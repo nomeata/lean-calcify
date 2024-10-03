@@ -3,9 +3,3 @@ defaultTargets = ["Calcify"]
 
 [[lean_lib]]
 name = "Calcify"
-
-[[require]]
-name = "egg"
-git  = "https://github.com/marcusrossel/lean-egg"
-rev  = "be10399ef3a510d1ea14ad5ae935d9cbf4f60d87"
-
