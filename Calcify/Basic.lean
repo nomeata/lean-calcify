@@ -247,8 +247,7 @@ partial def simplify (e : Expr) : MetaM Expr := do
         else
           return mkAppN (← mkEqNDRec' motive m (← simplify h)) xs[6:]
       else
-        unless e.getAppFn.isFVar  do
-          logInfo m!"Unrecognized: {e}"
+        -- unless e.getAppFn.isFVar do logInfo m!"Unrecognized: {e}"
         pure e
     mkLambdaFVars xs e'
 
@@ -310,9 +309,6 @@ elab (name := calcifyTac) tk:"calcify " t:tacticSeq : tactic => withMainContext 
   -/
 
   addSuggestion tk tactic (origSpan? := ← getRef)
-
-
-#exit
 
 /--
 info: Try this: calc
