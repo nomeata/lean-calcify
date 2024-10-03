@@ -22,6 +22,11 @@ partial def mkEqTrans' (p₁ p₂ : Expr) : MetaM Expr := do
   | Eq.trans _ _ _ _ p₁₁ p₁₂ => mkEqTrans' p₁₁ (← mkEqTrans' p₁₂ p₂)
   | _ => mkEqTrans p₁ p₂
 
+def mkEqSymm' (h₁ : Expr) : MetaM Expr := do
+  match_expr h₁ with
+  | Eq.symm _ _ _ h => pure h
+  | _ => mkEqSymm h₁
+
 
 partial def mkCongrArg' (f p : Expr) : MetaM Expr := do
   -- The function is constant? This becomes refl
@@ -48,6 +53,20 @@ def mkCongrFun' (h x : Expr) : MetaM Expr := do
 def mkCongr' (x₁ f₂ : Expr) (p1 p2 : Expr) : MetaM Expr := do
     mkEqTrans' (← mkCongrFun' p1 x₁) (← mkCongrArg' f₂ p2)
 
+
+def mkEqOfHEq' (h : Expr) : MetaM Expr := do
+  match_expr h with
+  | HEq.refl _ x => mkEqRefl x
+  | heq_of_eq _ _ _ h => pure h
+  | _ => mkEqOfHEq h
+
+def mkHEqOfEq (h : Expr) : MetaM Expr := do
+  match_expr h with
+  | Eq.refl _ x => mkHEqRefl x
+  | eq_of_heq _ _ _ h => pure h
+  | _ => mkAppM ``heq_of_eq #[h]
+
+
 def mkFunExt' (p : Expr) : MetaM Expr := do
   if let .lam n t (mkApp6 (.const ``Eq.trans _) _ _ _ _ p1 p2) bi := p then
     return ← mkEqTrans'
@@ -61,11 +80,17 @@ partial def mkEqMPR' (e1 e2 : Expr) : MetaM Expr := do
     -- A mpr applied to an congruence with equality can be turned into transitivities
     if let .lam n t (mkApp3 (.const ``Eq _) _β b₁ b₂) bi := f then
       return ← mkEqTrans' (← mkCongrArg' (.lam n t b₁ bi) p1)
-            (← mkEqTrans' e2 (← mkCongrArg' (.lam n t b₂ bi) (← mkEqSymm p1)))
+            (← mkEqTrans' e2
+            (← mkCongrArg' (.lam n t b₂ bi) (← mkEqSymm' p1)))
+    -- A mpr same with HEq
+    if let .lam n t (mkApp4 (.const ``HEq _) _β₁ b₁ _β₂ b₂) bi := f then
+      return ← mkHEqTrans (← mkHEqOfEq (← mkCongrArg' (.lam n t b₁ bi) p1))
+            (← mkHEqTrans e2
+            (← mkHEqOfEq (← mkCongrArg' (.lam n t b₂ bi) (← mkEqSymm' p1))))
 
     -- Special case of the above, with an eta-contracted congruence
     match_expr f with
-    | Eq _β _b₁ => return ← mkEqTrans' e2 (← mkEqSymm p1)
+    | Eq _β _b₁ => return ← mkEqTrans' e2 (← mkEqSymm' p1)
     | _ => pure ()
   | _ => pure ()
 
@@ -75,6 +100,11 @@ partial def mkEqMPR' (e1 e2 : Expr) : MetaM Expr := do
   | _ => pure ()
 
   mkEqMPR e1 e2
+
+def mkEqNDRec' (motive h1 h2 : Expr) : MetaM Expr := do
+  -- TODO: Eq.mpr (congrArg …) is just Eq.ndrec, is it?
+  -- logInfo m!"mkEqNDRec': {motive} {h1} {h2}"
+  mkEqMPR' (← mkCongrArg motive (← mkEqSymm' h2)) h1
 
 /-
 The following four functions push `ite_congr` past transitivity.
@@ -184,6 +214,7 @@ partial def mkOfEqTrue' (p : Expr) : MetaM Expr := do
 
 partial def simplify (e : Expr) : MetaM Expr := do
   lambdaTelescope e fun xs e => do
+    let e := e.headBeta
     let e' ← match_expr e with
 
     -- eliminate id application, and hope for the best
@@ -196,10 +227,29 @@ partial def simplify (e : Expr) : MetaM Expr := do
     | congrArg _α _β _a _a' f p       => do mkCongrArg' f (← simplify p)
     | funext _ _ _ _ p                => do mkFunExt' (← simplify p)
     | Eq.mpr _ _ p₁ p₂                => do mkEqMPR' (← simplify p₁) (← simplify p₂)
+    | Eq.refl _ _                     => pure e
+    | Eq.symm _ _ _ h                 => do mkEqSymm' (← simplify h)
     | Eq.trans _α _a _b _c p1 p2      => do mkEqTrans' (← simplify p1) (← simplify p2)
     | ite_congr _α _b _c _x _y _u _v _i1 _i2 p1 p2 p3 =>
       mkIteCongr (← inferType e) (← simplify p1) (← simplify p2) (← simplify p3)
-    | _                               => pure e
+    | HEq.refl _ _                    => pure e
+    | eq_of_heq _α _a _b h            => do mkEqOfHEq' (← simplify h)
+    | heq_of_eq _α _a _b h            => do mkHEqOfEq (← simplify h)
+    | _                               =>
+      -- This can have extra arguments
+      if e.isAppOf `Eq.ndrec && e.getAppNumArgs ≥ 6 then
+        let xs := e.getAppArgs
+        let motive := xs[2]!
+        let m := xs[3]!
+        let h ← simplify xs[5]!
+        if h.isAppOf ``Eq.refl then
+          simplify (mkAppN m xs[6:])
+        else
+          return mkAppN (← mkEqNDRec' motive m (← simplify h)) xs[6:]
+      else
+        unless e.getAppFn.isFVar  do
+          logInfo m!"Unrecognized: {e}"
+        pure e
     mkLambdaFVars xs e'
 
 
@@ -261,6 +311,8 @@ elab (name := calcifyTac) tk:"calcify " t:tacticSeq : tactic => withMainContext 
 
   addSuggestion tk tactic (origSpan? := ← getRef)
 
+
+#exit
 
 /--
 info: Try this: calc
