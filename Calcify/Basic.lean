@@ -22,6 +22,11 @@ partial def mkEqTrans' (p₁ p₂ : Expr) : MetaM Expr := do
   | Eq.trans _ _ _ _ p₁₁ p₁₂ => mkEqTrans' p₁₁ (← mkEqTrans' p₁₂ p₂)
   | _ => mkEqTrans p₁ p₂
 
+partial def mkHEqTrans' (p₁ p₂ : Expr) : MetaM Expr := do
+  match_expr p₁ with
+  | HEq.trans _ _ _ _ p₁₁ p₁₂ => mkHEqTrans' p₁₁ (← mkHEqTrans' p₁₂ p₂)
+  | _ => mkHEqTrans p₁ p₂
+
 def mkEqSymm' (h₁ : Expr) : MetaM Expr := do
   match_expr h₁ with
   | Eq.symm _ _ _ h => pure h
@@ -103,7 +108,7 @@ partial def mkEqMPR' (e1 e2 : Expr) : MetaM Expr := do
 
 def mkEqNDRec' (motive h1 h2 : Expr) : MetaM Expr := do
   -- TODO: Eq.mpr (congrArg …) is just Eq.ndrec, is it?
-  -- logInfo m!"mkEqNDRec': {motive} {h1} {h2}"
+  -- So maybe the mkEqMPR handling above should be moved here
   mkEqMPR' (← mkCongrArg motive (← mkEqSymm' h2)) h1
 
 /-
@@ -233,22 +238,35 @@ partial def simplify (e : Expr) : MetaM Expr := do
     | ite_congr _α _b _c _x _y _u _v _i1 _i2 p1 p2 p3 =>
       mkIteCongr (← inferType e) (← simplify p1) (← simplify p2) (← simplify p3)
     | HEq.refl _ _                    => pure e
+    | HEq.trans _α _β _γ _a _b _c p1 p2  => do mkHEqTrans' (← simplify p1) (← simplify p2)
     | eq_of_heq _α _a _b h            => do mkEqOfHEq' (← simplify h)
     | heq_of_eq _α _a _b h            => do mkHEqOfEq (← simplify h)
     | _                               =>
       -- This can have extra arguments
-      if e.isAppOf `Eq.ndrec && e.getAppNumArgs ≥ 6 then
+      if e.isAppOf ``Eq.ndrec && e.getAppNumArgs ≥ 6 then
         let xs := e.getAppArgs
         let motive := xs[2]!
         let m := xs[3]!
         let h ← simplify xs[5]!
         if h.isAppOf ``Eq.refl then
-          simplify (mkAppN m xs[6:])
-        else
-          return mkAppN (← mkEqNDRec' motive m (← simplify h)) xs[6:]
-      else
-        -- unless e.getAppFn.isFVar do logInfo m!"Unrecognized: {e}"
-        pure e
+          return ← simplify (mkAppN m xs[6:])
+
+        -- beta-reduce through Eq.ndrec
+        -- (TODO: Could do more arguments in one go)
+        if e.getAppNumArgs > 6 then
+          let arg := xs[6]!
+          if let .lam n d motiveType bi := motive then
+          if motiveType.isForall && !motiveType.bindingDomain!.hasLooseBVars then
+          let motive' := .lam n d (motiveType.bindingBody!.instantiate1 arg) bi
+          let m' := m.beta #[arg]
+          let e' := mkAppN (← mkEqNDRec motive' m' h) xs[7:]
+          return ← simplify e'
+
+        return ← simplify (mkAppN (← mkEqNDRec' motive m h) xs[6:])
+
+
+      -- unless e.getAppFn.isFVar do logInfo m!"Unrecognized: {e}"
+      pure e
     mkLambdaFVars xs e'
 
 
