@@ -439,7 +439,7 @@ example (x n : Nat) (P : Nat → Prop) (hP : P n): P (if 0 + (1 * x) = 0 then x 
   exact hP
 
 @[congr]
-theorem List.map_congr {f g : α → β} : ∀ {l : List α}, (∀ x ∈ l, f x = g x) → map f l = map g l
+private theorem List.map_congr {f g : α → β} : ∀ {l : List α}, (∀ x ∈ l, f x = g x) → map f l = map g l
   | [], _ => rfl
   | a :: l, h => by
     let ⟨h₁, h₂⟩ := forall_mem_cons.1 h
