@@ -11,7 +11,7 @@ open Lean.Meta.Tactic.TryThis (delabToRefinableSyntax addSuggestion)
 -- copied from std4/Std/Lean/Meta/Basic.lean
 /-- Solve a goal by synthesizing an instance. -/
 -- FIXME: probably can just be `g.inferInstance` once leanprover/lean4#2054 is fixed
-def Lean.MVarId.synthInstance (g : MVarId) : MetaM Unit := do
+private def Lean.MVarId.synthInstance (g : MVarId) : MetaM Unit := do
   g.assign (← Lean.Meta.synthInstance (← g.getType))
 
 -- NB: Pattern matching on terms using `mkAppN` is not good practice, as
