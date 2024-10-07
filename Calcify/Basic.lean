@@ -269,16 +269,29 @@ partial def simplify (e : Expr) : MetaM Expr := do
       pure e
     mkLambdaFVars xs e'
 
+partial def getCalcProof (proof : Expr) : MetaM Term :=
+  match_expr proof with
+  | Eq.symm _ _ _ h => do
+    let h ← getCalcProof h
+    `($(h).$(mkIdent `symm))
+  /-
+  Too bad we don't have congrArg in the Eq namespace
+  | congrArg _ _ _ _ f h => do
+    let h ← getCalcProof h
+    let f ← delabToRefinableSyntax f
+    `($(h).$(mkIdent `congrArg) $f)
+  -/
+  | _ => delabToRefinableSyntax proof
 
 partial def getCalcSteps (proof : Expr) (acc : Array (TSyntax ``calcStep)) :
     MetaM (Array (TSyntax ``calcStep)) :=
   match_expr proof with
   | Eq.trans _ _ rhs _ proof p2 => do
-    let step ← `(calcStep|_ = $(← delabToRefinableSyntax rhs) := $(← delabToRefinableSyntax proof))
+    let step ← `(calcStep|_ = $(← delabToRefinableSyntax rhs) := $(← getCalcProof proof))
     getCalcSteps p2 (acc.push step)
   | _ => do
     let some (_, _, rhs) := (← inferType proof).eq? | throwError "Expected proof of equality"
-    let step ← `(calcStep|_ = $(← delabToRefinableSyntax rhs) := $(← delabToRefinableSyntax proof))
+    let step ← `(calcStep|_ = $(← delabToRefinableSyntax rhs) := $(← getCalcProof proof))
     return acc.push step
 
 open Lean.Parser.Tactic in
@@ -323,7 +336,7 @@ elab (name := calcifyTac) tk:"calcify " t:tacticSeq : tactic => withMainContext 
   let goal ← instantiateMVars (← goalMVar.getType)
   let testMVar ← mkFreshExprSyntheticOpaqueMVar goal
   withRef tk do
-    Lean.Elab.Term.runTactic testMVar.mvarId! (← `(term|by {$tactic}))
+    Lean.Elab.Term.runTactic testMVar.mvarId! (← `(term|by $tactic))
   -/
 
   addSuggestion tk tactic (origSpan? := ← getRef)
@@ -332,7 +345,7 @@ elab (name := calcifyTac) tk:"calcify " t:tacticSeq : tactic => withMainContext 
 info: Try this: calc
     0 + n
     _ = n := (Nat.zero_add n)
-    _ = 1 * n := (Eq.symm (Nat.one_mul n))
+    _ = 1 * n := (Nat.one_mul n).symm
     _ = 1 * 1 * n := congrArg (fun x => x * n) (Eq.symm (Nat.mul_one 1))
 -/
 #guard_msgs in
@@ -344,7 +357,7 @@ example (n : Nat) : 0 + n = 1 * 1 * n := by
 info: Try this: calc
     0 + n
     _ = n := (Nat.zero_add n)
-    _ = 1 * n := (Eq.symm (Nat.one_mul n))
+    _ = 1 * n := (Nat.one_mul n).symm
     _ = 1 * 1 * n := congrArg (fun x => x * n) (Eq.symm (Nat.mul_one 1))
 -/
 #guard_msgs in
@@ -363,7 +376,7 @@ example (n : Nat) : 0 + n = n := by
 /--
 info: Try this: calc
     n
-    _ = 1 * n := Eq.symm (Nat.one_mul n)
+    _ = 1 * n := (Nat.one_mul n).symm
 -/
 #guard_msgs in
 example (n : Nat) : n = 1 * n := by
@@ -373,7 +386,7 @@ example (n : Nat) : n = 1 * n := by
 info: Try this: calc
     0 + n
     _ = n := (Nat.zero_add n)
-    _ = 1 * n := Eq.symm (Nat.one_mul n)
+    _ = 1 * n := (Nat.one_mul n).symm
 -/
 #guard_msgs in
 example (n : Nat) : 0 + n = 1 * n := by
@@ -383,7 +396,7 @@ example (n : Nat) : 0 + n = 1 * n := by
 info: Try this: calc
     0 + n
     _ = n := (Nat.zero_add n)
-    _ = n * 1 := (Eq.symm (Nat.mul_one n))
+    _ = n * 1 := (Nat.mul_one n).symm
     _ = 1 * n * 1 := congrArg (fun _a => _a * 1) (Eq.symm (Nat.one_mul n))
 -/
 #guard_msgs in
@@ -394,7 +407,7 @@ example (n : Nat) : 0 + n = 1 * n * 1 := by
 info: Try this: calc
     0 + n
     _ = n := (Nat.zero_add n)
-    _ = 0 + n := (Eq.symm (Nat.zero_add n))
+    _ = 0 + n := (Nat.zero_add n).symm
     _ = 0 + n * 1 := congrArg (fun _a => 0 + _a) (Eq.symm (Nat.mul_one n))
 -/
 #guard_msgs in

@@ -19,7 +19,7 @@ info: Try this: calc
     _ = x * y * x * (x * y * y) * (y * (y * z * z)) := (congrArg (fun a' => a' * (y * (y * z * z))) (h x (x * y) y))
     _ = x * y * x * (x * y * y) * (x * y * y * (y * z * z) * (y * z * z)) :=
       (congrArg (fun x_1 => x * y * x * (x * y * y) * (x_1 * (y * z * z))) (h y (x * y) z))
-    _ = x * y * y := Eq.symm (h (x * y * y) (x * y * x) (y * z * z))
+    _ = x * y * y := (h (x * y * y) (x * y * x) (y * z * z)).symm
 -/
 #guard_msgs in
 theorem helper_lemma (G: Type _) [inst : Mul G] (h: ∀ x y z : G, x = (y * x) * ((x * z) * z)) : ∀ x y z : G, x * (y * ((y * z) * z)) = (x * y) * y := by
