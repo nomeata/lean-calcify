@@ -27,12 +27,6 @@ partial def mkHEqTrans' (p₁ p₂ : Expr) : MetaM Expr := do
   | HEq.trans _ _ _ _ p₁₁ p₁₂ => mkHEqTrans' p₁₁ (← mkHEqTrans' p₁₂ p₂)
   | _ => mkHEqTrans p₁ p₂
 
-def mkEqSymm' (h₁ : Expr) : MetaM Expr := do
-  match_expr h₁ with
-  | Eq.symm _ _ _ h => pure h
-  | _ => mkEqSymm h₁
-
-
 partial def mkCongrArg' (f p : Expr) : MetaM Expr := do
   -- The function is constant? This becomes refl
   if let .lam _ _ b _ := f then
@@ -71,13 +65,19 @@ def mkHEqOfEq (h : Expr) : MetaM Expr := do
   | eq_of_heq _ _ _ h => pure h
   | _ => mkAppM ``heq_of_eq #[h]
 
-
 def mkFunExt' (p : Expr) : MetaM Expr := do
   if let .lam n t (mkApp6 (.const ``Eq.trans _) _ _ _ _ p1 p2) bi := p then
     return ← mkEqTrans'
       (← mkFunExt' (.lam n t p1 bi))
       (← mkFunExt' (.lam n t p2 bi))
   mkFunExt p
+
+partial def mkEqSymm' (h : Expr) : MetaM Expr := do
+  match_expr h with
+  | Eq.symm _ _ _ h => pure h
+  | Eq.trans _ _ _ _ p₁ p₂ => mkEqTrans' (← mkEqSymm' p₂) (← mkEqSymm' p₁)
+  | congrArg _ _ _ _ f p1 => mkCongrArg' f (← mkEqSymm' p1)
+  | _ => mkEqSymm h
 
 partial def mkEqMPR' (e1 e2 : Expr) : MetaM Expr := do
   match_expr e1 with
