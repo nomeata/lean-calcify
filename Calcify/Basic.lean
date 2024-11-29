@@ -264,6 +264,9 @@ partial def simplify (e : Expr) : MetaM Expr := do
 
         return ← simplify (mkAppN (← mkEqNDRec' motive m h) xs[6:])
 
+      -- Let's look through auxLemmas which are created by some tactics
+      if let some e' ← delta? e (· matches .num (.str _ "_auxLemma") _) then
+        return ← simplify e'
 
       -- unless e.getAppFn.isFVar do logInfo m!"Unrecognized: {e}"
       pure e
