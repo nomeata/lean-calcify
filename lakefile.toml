@@ -3,3 +3,7 @@ defaultTargets = ["Calcify"]
 
 [[lean_lib]]
 name = "Calcify"
+
+[[lean_lib]]
+name = "tests"
+globs = "Calcify.Tests"
