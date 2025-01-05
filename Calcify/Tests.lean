@@ -22,3 +22,38 @@ example (n : Nat) : Gamma (coe n + 1) * Gamma (coe n + 1) = coe (fact n) * coe (
   calcify simp only [← cast_mul, Gamma_nat_eq_factorial]
 
 end issue9
+
+section issue10
+
+
+-- could be improved
+
+/--
+info: Try this: ⏎
+  conv =>
+    tactic =>
+      calc
+        True ∧ True ↔ True
+        _ = (True ↔ True) := congrArg (fun x => x ↔ True) (and_self True)
+  refine of_eq_true (iff_self True)
+-/
+#guard_msgs in
+example : (True ∧ True) ↔ True := by
+  calcify simp
+
+/--
+info: Try this: calc
+    True ∧ True
+    _ = True := and_self True
+-/
+#guard_msgs in
+example : (True ∧ True) = True := by
+  calcify simp
+
+/-- info: Try this: exact of_eq_true (iff_self True) -/
+#guard_msgs in
+example : True ↔ True := by
+  show_term simp -- Expected proof of equality
+
+
+end issue10
