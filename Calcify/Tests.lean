@@ -25,35 +25,62 @@ end issue9
 
 section issue10
 
-
--- could be improved
-
 /--
 info: Try this: ⏎
-  conv =>
-    tactic =>
-      calc
-        True ∧ True ↔ True
-        _ = (True ↔ True) := congrArg (fun x => x ↔ True) (and_self True)
-  refine of_eq_true (iff_self True)
--/
-#guard_msgs in
-example : (True ∧ True) ↔ True := by
-  calcify simp
-
-/--
-info: Try this: calc
+  apply of_eq_true
+  calc
     True ∧ True
     _ = True := and_self True
 -/
 #guard_msgs in
-example : (True ∧ True) = True := by
+example : True ∧ True := by
   calcify simp
 
-/-- info: Try this: exact of_eq_true (iff_self True) -/
+
+/--
+info: Try this: ⏎
+  apply Iff.of_eq
+  calc
+    True ∧ True ∧ True
+    _ = (True ∧ True) := (congrArg (fun x => True ∧ x) (and_self True))
+    _ = True := and_self True
+-/
+#guard_msgs in
+example : (True ∧ True ∧ True) ↔ True := by
+  calcify simp
+
+/--
+info: Try this: ⏎
+  apply Iff.of_eq
+  calc
+    True ∧ False ∧ True
+    _ = (True ∧ False) := (congrArg (fun x => True ∧ x) (and_true False))
+    _ = False := (and_false True)
+    _ = (False ∧ True) := (and_true False).symm
+-/
+#guard_msgs in
+example : (True ∧ False ∧ True) ↔ (False ∧ True) := by
+  calcify simp
+
+/--
+info: Try this: calc
+    True ∧ True ∧ True
+    _ = (True ∧ True) := (congrArg (fun x => True ∧ x) (and_self True))
+    _ = True := and_self True
+-/
+#guard_msgs in
+example : (True ∧ True ∧ True) = True := by
+  calcify simp
+
+/-- info: Try this: exact Iff.refl True -/
 #guard_msgs in
 example : True ↔ True := by
-  show_term simp -- Expected proof of equality
+  calcify simp
+
+/-- info: Try this: exact True.intro -/
+#guard_msgs in
+example : True := by
+   calcify simp
 
 
 end issue10

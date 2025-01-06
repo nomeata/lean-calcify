@@ -79,6 +79,12 @@ partial def mkEqSymm' (h : Expr) : MetaM Expr := do
   | congrArg _ _ _ _ f p1 => mkCongrArg' f (← mkEqSymm' p1)
   | _ => mkEqSymm h
 
+def mkPropExt' (e : Expr) : MetaM Expr := do
+  match_expr e with
+  | Iff.refl p => mkEqRefl p
+  | Iff.of_eq _ _ p => pure p
+  | _ => mkPropExt e
+
 partial def mkEqMPR' (e1 e2 : Expr) : MetaM Expr := do
   match_expr e1 with
   | congrArg _ _ _ _ f p1 => do
@@ -87,15 +93,22 @@ partial def mkEqMPR' (e1 e2 : Expr) : MetaM Expr := do
       return ← mkEqTrans' (← mkCongrArg' (.lam n t b₁ bi) p1)
             (← mkEqTrans' e2
             (← mkCongrArg' (.lam n t b₂ bi) (← mkEqSymm' p1)))
-    -- A mpr same with HEq
+    -- same with HEq
     if let .lam n t (mkApp4 (.const ``HEq _) _β₁ b₁ _β₂ b₂) bi := f then
-      return ← mkHEqTrans (← mkHEqOfEq (← mkCongrArg' (.lam n t b₁ bi) p1))
-            (← mkHEqTrans e2
+      return ← mkHEqTrans' (← mkHEqOfEq (← mkCongrArg' (.lam n t b₁ bi) p1))
+            (← mkHEqTrans' e2
             (← mkHEqOfEq (← mkCongrArg' (.lam n t b₂ bi) (← mkEqSymm' p1))))
+    -- same with Iff
+    if let .lam n t (mkApp2 (.const ``Iff _) b₁ b₂) bi := f then
+      return ← mkIffOfEq (
+            ← mkEqTrans' (← mkCongrArg' (.lam n t b₁ bi) p1)
+            (← mkEqTrans' (← mkPropExt' e2)
+            (← mkCongrArg' (.lam n t b₂ bi) (← mkEqSymm' p1))))
 
     -- Special case of the above, with an eta-contracted congruence
     match_expr f with
     | Eq _β _b₁ => return ← mkEqTrans' e2 (← mkEqSymm' p1)
+    | Iff _ => return ← mkIffOfEq (← mkEqTrans' (← mkPropExt' e2) (← mkEqSymm' p1))
     | _ => pure ()
   | _ => pure ()
 
@@ -213,6 +226,7 @@ def mkIteCongr (goal p1 p2 p3 : Expr) : MetaM Expr := do
 partial def mkOfEqTrue' (p : Expr) : MetaM Expr := do
   match_expr p with
   | eq_self _α a => mkEqRefl a
+  | iff_self a => pure <| mkApp (mkConst ``Iff.refl) a
   | eq_true _P p => pure p
   | Eq.trans _ _ _ _ p1 p2 => do mkEqMPR' p1 (← mkOfEqTrue' p2)
   | _ => do mkOfEqTrue p
@@ -269,7 +283,10 @@ partial def simplify (e : Expr) : MetaM Expr := do
         return ← simplify e'
 
       -- unless e.getAppFn.isFVar do logInfo m!"Unrecognized: {e}"
+      trace[calcify] "unrecognized:{indentExpr e}"
       pure e
+    unless e == e' do
+      trace[calcify] "simplify:{indentExpr e}\n==>{indentExpr e'}"
     mkLambdaFVars xs e'
 
 partial def getCalcProof (proof : Expr) : MetaM Term :=
@@ -293,29 +310,31 @@ partial def getCalcSteps (proof : Expr) (acc : Array (TSyntax ``calcStep)) :
     let step ← `(calcStep|_ = $(← delabToRefinableSyntax rhs) := $(← getCalcProof proof))
     getCalcSteps p2 (acc.push step)
   | _ => do
-    let some (_, _, rhs) := (← inferType proof).eq? | throwError "Expected proof of equality"
+    let type ← whnf (← inferType proof)
+    let some (_, _, rhs) := type.eq? | throwError "Expected proof of equality, got {type}"
     let step ← `(calcStep|_ = $(← delabToRefinableSyntax rhs) := $(← getCalcProof proof))
     return acc.push step
 
 open Lean.Parser.Tactic in
 def delabCalcProof (e : Expr) : MetaM (TSyntax `tactic) := do
-    let some (_, lhs, _) := (← inferType e).eq? | throwError "Expected proof of equality"
+    let type ← whnf (← inferType e)
+    let some (_, lhs, _) := type.eq? | throwError "Expected proof of equality, got {type}"
     let stepStx ← getCalcSteps e #[]
     `(tactic|calc
         $(← delabToRefinableSyntax lhs):term
         $stepStx*)
 
 def delabCalcTerm (e : Expr) : MetaM (TSyntax `term) := do
-    let some (_, lhs, _) := (← inferType e).eq? | throwError "Expected proof of equality"
+    let type ← whnf (← inferType e)
+    let some (_, lhs, _) := type.eq? | throwError "Expected proof of equality, got {type}"
     let stepStx ← getCalcSteps e #[]
     `(term|calc
     $(← delabToRefinableSyntax lhs):term
     $stepStx*)
 
-open Lean.Parser.Tactic in
-def delabProof (e : Expr) : MetaM (TSyntax ``tacticSeq) :=
-  match_expr e with
-  | Eq.mpr _ _ p1 p2 => do
+open Lean.Parser.Tactic
+
+def delabMPRCalc (p1 p2 : Expr) : MetaM (TSyntax ``tacticSeq) := do
     let t ← delabCalcProof p1
     if p2.isMVar then
       `(tacticSeq|conv => tactic => $t:tactic)
@@ -323,9 +342,35 @@ def delabProof (e : Expr) : MetaM (TSyntax ``tacticSeq) :=
       let restProof ← delabToRefinableSyntax p2
       `(tacticSeq|conv => tactic => $t:tactic
                   refine $restProof)
+
+def delabOfEqTrueCalc (p : Expr) : MetaM (TSyntax ``tacticSeq) := do
+  let t ← delabCalcProof p
+  `(tacticSeq|apply $(mkIdent ``of_eq_true)
+              $t)
+
+def delabCalcSeq (p : Expr) : MetaM (TSyntax ``tacticSeq) := do
+  let t ← delabCalcProof p
+  `(tacticSeq|$t:tactic)
+
+def delabTrivial (p : Expr) : MetaM (TSyntax ``tacticSeq) := do
+`(tacticSeq|exact $(← delabToRefinableSyntax p))
+
+def delabProof (e : Expr) : MetaM (TSyntax ``tacticSeq) := do
+  match_expr e with
+  | True.intro => delabTrivial e
+  | Iff.refl _ => delabTrivial e
+  | Eq.mpr _ _ p1 p2 => delabMPRCalc p1 p2
+  | Iff.of_eq _ _ p =>
+    let t ← delabCalcProof p
+    `(tacticSeq|apply $(mkIdent ``Iff.of_eq)
+                $t)
+  | of_eq_true h p =>
+    if h.isEq then
+      delabCalcSeq e
+    else
+      delabOfEqTrueCalc p
   | _ => do
-    let t ← delabCalcProof e
-    `(tacticSeq|$t:tactic)
+    delabCalcSeq e
 
 elab (name := calcifyTac) tk:"calcify " t:tacticSeq : tactic => withMainContext do
   let goalMVar ← getMainGoal
@@ -538,3 +583,5 @@ info: Try this: calc
 example xs (f : Nat → Nat) (h : ∀ n, n ∈ xs → f n = 1 * n) :
     List.map (fun n => f n) xs = xs := by
   calcify simp (config := {contextual := true}) [h]
+
+initialize registerTraceClass `calcify
