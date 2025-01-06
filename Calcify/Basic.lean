@@ -289,6 +289,8 @@ partial def simplify (e : Expr) : MetaM Expr := do
       trace[calcify] "simplify:{indentExpr e}\n==>{indentExpr e'}"
     mkLambdaFVars xs e'
 
+open Lean.Parser.Tactic
+
 partial def getCalcProof (proof : Expr) : MetaM Term :=
   match_expr proof with
   | Eq.symm _ _ _ h => do
@@ -315,11 +317,20 @@ partial def getCalcSteps (proof : Expr) (acc : Array (TSyntax ``calcStep)) :
     let step ← `(calcStep|_ = $(← delabToRefinableSyntax rhs) := $(← getCalcProof proof))
     return acc.push step
 
-open Lean.Parser.Tactic in
 def delabCalcProof (e : Expr) : MetaM (TSyntax `tactic) := do
     let type ← whnf (← inferType e)
     let some (_, lhs, _) := type.eq? | throwError "Expected proof of equality, got {type}"
     let stepStx ← getCalcSteps e #[]
+    `(tactic|calc
+        $(← delabToRefinableSyntax lhs):term
+        $stepStx*)
+
+def delabOfIffOfEqCalcProof (e : Expr) : MetaM (TSyntax `tactic) := do
+    let type ← whnf (← inferType e)
+    let some (_, lhs, rhs) := type.eq? | throwError "Expected proof of equality, got {type}"
+    let stepStx ← getCalcSteps e #[]
+    let finalStep ← `(calcStep|_ ↔ $(← delabToRefinableSyntax rhs) := $(mkIdent ``Iff.rfl))
+    let stepStx := stepStx.push finalStep
     `(tactic|calc
         $(← delabToRefinableSyntax lhs):term
         $stepStx*)
@@ -331,8 +342,6 @@ def delabCalcTerm (e : Expr) : MetaM (TSyntax `term) := do
     `(term|calc
     $(← delabToRefinableSyntax lhs):term
     $stepStx*)
-
-open Lean.Parser.Tactic
 
 def delabMPRCalc (p1 p2 : Expr) : MetaM (TSyntax ``tacticSeq) := do
     let t ← delabCalcProof p1
@@ -361,9 +370,8 @@ def delabProof (e : Expr) : MetaM (TSyntax ``tacticSeq) := do
   | Iff.refl _ => delabTrivial e
   | Eq.mpr _ _ p1 p2 => delabMPRCalc p1 p2
   | Iff.of_eq _ _ p =>
-    let t ← delabCalcProof p
-    `(tacticSeq|apply $(mkIdent ``Iff.of_eq)
-                $t)
+    let t ← delabOfIffOfEqCalcProof p
+    `(tacticSeq|$t:tactic)
   | of_eq_true h p =>
     if h.isEq then
       delabCalcSeq e
