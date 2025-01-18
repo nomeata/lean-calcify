@@ -59,7 +59,7 @@ def mkEqOfHEq' (h : Expr) : MetaM Expr := do
   | heq_of_eq _ _ _ h => pure h
   | _ => mkEqOfHEq h
 
-def mkHEqOfEq (h : Expr) : MetaM Expr := do
+def mkHEqOfEq' (h : Expr) : MetaM Expr := do
   match_expr h with
   | Eq.refl _ x => mkHEqRefl x
   | eq_of_heq _ _ _ h => pure h
@@ -95,9 +95,9 @@ partial def mkEqMPR' (e1 e2 : Expr) : MetaM Expr := do
             (← mkCongrArg' (.lam n t b₂ bi) (← mkEqSymm' p1)))
     -- same with HEq
     if let .lam n t (mkApp4 (.const ``HEq _) _β₁ b₁ _β₂ b₂) bi := f then
-      return ← mkHEqTrans' (← mkHEqOfEq (← mkCongrArg' (.lam n t b₁ bi) p1))
+      return ← mkHEqTrans' (← mkHEqOfEq' (← mkCongrArg' (.lam n t b₁ bi) p1))
             (← mkHEqTrans' e2
-            (← mkHEqOfEq (← mkCongrArg' (.lam n t b₂ bi) (← mkEqSymm' p1))))
+            (← mkHEqOfEq' (← mkCongrArg' (.lam n t b₂ bi) (← mkEqSymm' p1))))
     -- same with Iff
     if let .lam n t (mkApp2 (.const ``Iff _) b₁ b₂) bi := f then
       return ← mkIffOfEq (
@@ -254,7 +254,7 @@ partial def simplify (e : Expr) : MetaM Expr := do
     | HEq.refl _ _                    => pure e
     | HEq.trans _α _β _γ _a _b _c p1 p2  => do mkHEqTrans' (← simplify p1) (← simplify p2)
     | eq_of_heq _α _a _b h            => do mkEqOfHEq' (← simplify h)
-    | heq_of_eq _α _a _b h            => do mkHEqOfEq (← simplify h)
+    | heq_of_eq _α _a _b h            => do mkHEqOfEq' (← simplify h)
     | _                               =>
       -- This can have extra arguments
       if e.isAppOf ``Eq.ndrec && e.getAppNumArgs ≥ 6 then
