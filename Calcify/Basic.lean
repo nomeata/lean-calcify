@@ -59,12 +59,6 @@ def mkEqOfHEq' (h : Expr) : MetaM Expr := do
   | heq_of_eq _ _ _ h => pure h
   | _ => mkEqOfHEq h
 
-def mkHEqOfEq (h : Expr) : MetaM Expr := do
-  match_expr h with
-  | Eq.refl _ x => mkHEqRefl x
-  | eq_of_heq _ _ _ h => pure h
-  | _ => mkAppM ``heq_of_eq #[h]
-
 def mkFunExt' (p : Expr) : MetaM Expr := do
   if let .lam n t (mkApp6 (.const ``Eq.trans _) _ _ _ _ p1 p2) bi := p then
     return ← mkEqTrans'
