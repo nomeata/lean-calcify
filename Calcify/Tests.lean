@@ -1,4 +1,5 @@
-import Calcify.Basic
+import Calcify
+import Calcify.Demo
 
 section issue9
 
