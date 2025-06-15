@@ -186,8 +186,7 @@ private theorem List.map_congr {f g : α → β} : ∀ {l : List α}, (∀ x ∈
 /--
 info: Try this: calc
     List.map (fun n => f n) xs
-    _ = List.map (fun x => x) xs :=
-      (List.map_congr fun x a => Eq.trans ((fun n a => h n a) x (of_eq_true (eq_true a))) (Nat.one_mul x))
+    _ = List.map (fun x => x) xs := (List.map_congr fun x a => Eq.trans ((fun n a => h n a) x a) (Nat.one_mul x))
     _ = id xs := congrArg (fun x => x xs) List.map_id_fun'
 -/
 #guard_msgs in

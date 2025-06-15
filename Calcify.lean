@@ -87,6 +87,7 @@ def mkPropExt' (e : Expr) : MetaM Expr := do
 
 partial def mkEqMPR' (e1 e2 : Expr) : MetaM Expr := do
   match_expr e1 with
+  | Eq.refl _ _ => return e2
   | congrArg _ _ _ _ f p1 => do
     -- A mpr applied to an congruence with equality can be turned into transitivities
     if let .lam n t (mkApp3 (.const ``Eq _) _β b₁ b₂) bi := f then
@@ -118,6 +119,9 @@ partial def mkEqMPR' (e1 e2 : Expr) : MetaM Expr := do
   | _ => pure ()
 
   mkEqMPR e1 e2
+
+partial def mkEqMP' (e1 e2 : Expr) : MetaM Expr := do
+  mkEqMPR' (← mkEqSymm' e1) e2
 
 def mkEqNDRec' (motive h1 h2 : Expr) : MetaM Expr := do
   -- TODO: Eq.mpr (congrArg …) is just Eq.ndrec, is it?
@@ -231,63 +235,100 @@ partial def mkOfEqTrue' (p : Expr) : MetaM Expr := do
   | Eq.trans _ _ _ _ p1 p2 => do mkEqMPR' p1 (← mkOfEqTrue' p2)
   | _ => do mkOfEqTrue p
 
+/--
+Recognizes a very particular, simple case of `grind` proofs,
+where the proof by negation is somewhat vacuuous
+-/
+partial def simpleGrindProof (e : Expr) : MetaM (Option Expr) := do
+  let_expr Classical.byContradiction p of_hnotp := e | return none
+  unless of_hnotp.isLambda do return none
+  lambdaBoundedTelescope of_hnotp 1 fun xs e => do
+    unless xs.size = 1 do return none
+    let_expr Eq.mp eTrue eFalse hTrueFalse hTrue := e | return none
+    let_expr True := eTrue | return none
+    let_expr False := eFalse | return none
+    let_expr True.intro := hTrue | return none
+    let_expr Eq.trans eProp eTrue p' eFalse hTruep _hpFalse := hTrueFalse| return none
+    unless eProp.isProp do return none
+    let_expr True := eTrue | return none
+    let_expr False := eFalse | return none
+    unless (← isDefEq p p') do return none
+    if hTruep.hasAnyFVar (· == xs[0]!.fvarId!) then return none
+    return some (← mkOfEqTrue' (← mkEqSymm' hTruep))
+
+
 partial def simplify (e : Expr) : MetaM Expr := do
-  lambdaTelescope e fun xs e => do
-    let e := e.headBeta
-    let e' ← match_expr e with
+  let e' ← go e
+  unless e == e' do
+    trace[calcify] "simplify:{indentExpr e}\n==>{indentExpr e'}"
+  prependError "checking {e'}" do check e'
+  pure e'
+where go (e : Expr) : MetaM Expr := do
+  if e.isLambda then
+    return ← lambdaTelescope e fun xs e => do
+      let e' ← simplify e
+      return (← mkLambdaFVars xs e')
 
-    -- eliminate id application, and hope for the best
-    | id _ p => simplify p
+  let e := e.headBeta
+  match_expr e with
 
-    -- Use the smart constructors above
-    | congr _α _β _f₁ f₂ x₁ _x₂ p1 p2 => do mkCongr' x₁ f₂ (← simplify p1) (← simplify p2)
-    | of_eq_true _ p                  => do mkOfEqTrue' (← simplify p)
-    | congrFun _ _ _ _ p1 x           => do mkCongrFun' (← simplify p1) x
-    | congrArg _α _β _a _a' f p       => do mkCongrArg' f (← simplify p)
-    | funext _ _ _ _ p                => do mkFunExt' (← simplify p)
-    | Eq.mpr _ _ p₁ p₂                => do mkEqMPR' (← simplify p₁) (← simplify p₂)
-    | Eq.refl _ _                     => pure e
-    | Eq.symm _ _ _ h                 => do mkEqSymm' (← simplify h)
-    | Eq.trans _α _a _b _c p1 p2      => do mkEqTrans' (← simplify p1) (← simplify p2)
-    | ite_congr _α _b _c _x _y _u _v _i1 _i2 p1 p2 p3 =>
-      mkIteCongr (← inferType e) (← simplify p1) (← simplify p2) (← simplify p3)
-    | HEq.refl _ _                    => pure e
-    | HEq.trans _α _β _γ _a _b _c p1 p2  => do mkHEqTrans' (← simplify p1) (← simplify p2)
-    | eq_of_heq _α _a _b h            => do mkEqOfHEq' (← simplify h)
-    | heq_of_eq _α _a _b h            => do mkHEqOfEq' (← simplify h)
-    | _                               =>
-      -- This can have extra arguments
-      if e.isAppOf ``Eq.ndrec && e.getAppNumArgs ≥ 6 then
-        let xs := e.getAppArgs
-        let motive := xs[2]!
-        let m := xs[3]!
-        let h ← simplify xs[5]!
-        if h.isAppOf ``Eq.refl then
-          return ← simplify (mkAppN m xs[6:])
+  -- eliminate id application, and hope for the best
+  | id _ p => simplify p
 
-        -- beta-reduce through Eq.ndrec
-        -- (TODO: Could do more arguments in one go)
-        if e.getAppNumArgs > 6 then
-          let arg := xs[6]!
-          if let .lam n d motiveType bi := motive then
-          if motiveType.isForall && !motiveType.bindingDomain!.hasLooseBVars then
-          let motive' := .lam n d (motiveType.bindingBody!.instantiate1 arg) bi
-          let m' := m.beta #[arg]
-          let e' := mkAppN (← mkEqNDRec motive' m' h) xs[7:]
-          return ← simplify e'
+  -- Use the smart constructors above
+  | congr _α _β _f₁ f₂ x₁ _x₂ p1 p2 => do mkCongr' x₁ f₂ (← simplify p1) (← simplify p2)
+  | of_eq_true _ p                  => do mkOfEqTrue' (← simplify p)
+  | congrFun _ _ _ _ p1 x           => do mkCongrFun' (← simplify p1) x
+  | congrArg _α _β _a _a' f p       => do mkCongrArg' f (← simplify p)
+  | funext _ _ _ _ p                => do mkFunExt' (← simplify p)
+  | Eq.mp _ _ p₁ p₂                 => do mkEqMP' (← simplify p₁) (← simplify p₂)
+  | Eq.mpr _ _ p₁ p₂                => do mkEqMPR' (← simplify p₁) (← simplify p₂)
+  | Eq.refl _ _                     => pure e
+  | Eq.symm _ _ _ h                 => do mkEqSymm' (← simplify h)
+  | Eq.trans _α _a _b _c p1 p2      => do mkEqTrans' (← simplify p1) (← simplify p2)
+  | ite_congr _α _b _c _x _y _u _v _i1 _i2 p1 p2 p3 => do
+    mkIteCongr (← inferType e) (← simplify p1) (← simplify p2) (← simplify p3)
+  | HEq.refl _ _                    => pure e
+  | HEq.trans _α _β _γ _a _b _c p1 p2  => do mkHEqTrans' (← simplify p1) (← simplify p2)
+  | eq_of_heq _α _a _b h            => do mkEqOfHEq' (← simplify h)
+  | heq_of_eq _α _a _b h            => do mkHEqOfEq' (← simplify h)
+  | _                               => do
+    -- This can have extra arguments
+    if e.isAppOf ``Eq.ndrec && e.getAppNumArgs ≥ 6 then
+      let xs := e.getAppArgs
+      let motive := xs[2]!
+      let m := xs[3]!
+      let h ← simplify xs[5]!
+      if h.isAppOf ``Eq.refl then
+        return ← simplify (mkAppN m xs[6:])
 
-        return ← simplify (mkAppN (← mkEqNDRec' motive m h) xs[6:])
-
-      -- Let's look through auxLemmas which are created by some tactics
-      if let some e' ← delta? e (· matches .num (.str _ "_auxLemma") _) then
+      -- beta-reduce through Eq.ndrec
+      -- (TODO: Could do more arguments in one go)
+      if e.getAppNumArgs > 6 then
+        let arg := xs[6]!
+        if let .lam n d motiveType bi := motive then
+        if motiveType.isForall && !motiveType.bindingDomain!.hasLooseBVars then
+        let motive' := .lam n d (motiveType.bindingBody!.instantiate1 arg) bi
+        let m' := m.beta #[arg]
+        let e' := mkAppN (← mkEqNDRec motive' m' h) xs[7:]
         return ← simplify e'
 
-      -- unless e.getAppFn.isFVar do logInfo m!"Unrecognized: {e}"
-      trace[calcify] "unrecognized:{indentExpr e}"
-      pure e
-    unless e == e' do
-      trace[calcify] "simplify:{indentExpr e}\n==>{indentExpr e'}"
-    mkLambdaFVars xs e'
+      return ← simplify (mkAppN (← mkEqNDRec' motive m h) xs[6:])
+
+    if let some e' ← simpleGrindProof e then
+      trace[calcify] "simpleGrindProof:{indentExpr e}\n==>{indentExpr e'}"
+      return ← simplify e'
+
+    -- Let's look through auxLemmas which are created by some tactics
+    if let some e' ← delta? e (· matches .num (.str _ "_auxLemma") _) then
+      return ← simplify e'
+    if let some e' ← delta? e (fun n => match n with | .str _ s => s.startsWith "_proof_" | _ => false) then
+      return ← simplify e'
+    if let some e' ← delta? e (fun n => match n with | .str _ s => s.startsWith "_simp_" | _ => false) then
+      return ← simplify e'
+
+    trace[calcify] "unrecognized:{indentExpr e}"
+    pure e
 
 open Lean.Parser.Tactic
 
@@ -385,7 +426,8 @@ elab (name := calcifyTac) tk:"calcify " t:tacticSeq : tactic => withMainContext 
   evalTactic t
   let proof ← instantiateMVars (mkMVar goalMVar)
   let proof ← simplify proof
-  check proof
+  prependError m!"type-incorrect proof after simplification:{indentExpr proof}" do
+    check proof
   let tactic ← delabProof proof
 
   /-
