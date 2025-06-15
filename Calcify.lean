@@ -85,6 +85,13 @@ def mkPropExt' (e : Expr) : MetaM Expr := do
   | Iff.of_eq _ _ p => pure p
   | _ => mkPropExt e
 
+partial def mkEqMP' (e1 e2 : Expr) : MetaM Expr := do
+  match_expr e1 with
+  | Eq.refl _ _ => return e2
+  | _ => pure ()
+
+  mkEqMP e1 e2
+
 partial def mkEqMPR' (e1 e2 : Expr) : MetaM Expr := do
   match_expr e1 with
   | congrArg _ _ _ _ f p1 => do
@@ -231,6 +238,28 @@ partial def mkOfEqTrue' (p : Expr) : MetaM Expr := do
   | Eq.trans _ _ _ _ p1 p2 => do mkEqMPR' p1 (← mkOfEqTrue' p2)
   | _ => do mkOfEqTrue p
 
+/--
+Recognizes a very particular, simple case of `grind` proofs,
+where the proof by negation is somewhat vacuuous
+-/
+partial def simpleGrindProof (e : Expr) : MetaM (Option Expr) := do
+  let_expr Classical.byContradiction p of_hnotp := e | return none
+  unless of_hnotp.isLambda do return none
+  lambdaBoundedTelescope of_hnotp 1 fun xs e => do
+    unless xs.size = 1 do return none
+    let_expr Eq.mp eTrue eFalse hTrueFalse hTrue := e | return none
+    let_expr True := eTrue | return none
+    let_expr False := eFalse | return none
+    let_expr True.intro := hTrue | return none
+    let_expr Eq.trans eProp eTrue p' eFalse hTruep _hpFalse := hTrueFalse| return none
+    unless eProp.isProp do return none
+    let_expr True := eTrue | return none
+    let_expr False := eFalse | return none
+    unless (← isDefEq p p') do return none
+    if hTruep.hasAnyFVar (· == xs[0]!.fvarId!) then return none
+    return some (← mkOfEqTrue' (← mkEqSymm' hTruep))
+
+
 partial def simplify (e : Expr) : MetaM Expr := do
   lambdaTelescope e fun xs e => do
     let e := e.headBeta
@@ -245,6 +274,7 @@ partial def simplify (e : Expr) : MetaM Expr := do
     | congrFun _ _ _ _ p1 x           => do mkCongrFun' (← simplify p1) x
     | congrArg _α _β _a _a' f p       => do mkCongrArg' f (← simplify p)
     | funext _ _ _ _ p                => do mkFunExt' (← simplify p)
+    | Eq.mp _ _ p₁ p₂                 => do mkEqMP' (← simplify p₁) (← simplify p₂)
     | Eq.mpr _ _ p₁ p₂                => do mkEqMPR' (← simplify p₁) (← simplify p₂)
     | Eq.refl _ _                     => pure e
     | Eq.symm _ _ _ h                 => do mkEqSymm' (← simplify h)
@@ -278,8 +308,13 @@ partial def simplify (e : Expr) : MetaM Expr := do
 
         return ← simplify (mkAppN (← mkEqNDRec' motive m h) xs[6:])
 
+      if let some e' ← simpleGrindProof e then
+        return ← simplify e'
+
       -- Let's look through auxLemmas which are created by some tactics
       if let some e' ← delta? e (· matches .num (.str _ "_auxLemma") _) then
+        return ← simplify e'
+      if let some e' ← delta? e (fun n => match n with | .str _ s => s.startsWith "_proof_" | _ => false) then
         return ← simplify e'
 
       -- unless e.getAppFn.isFVar do logInfo m!"Unrecognized: {e}"
